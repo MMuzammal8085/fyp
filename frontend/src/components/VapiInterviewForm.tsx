@@ -7,6 +7,8 @@ interface VapiCallData {
   assistantId: string;
   systemPrompt: string;
   variableValues: Record<string, any>;
+  email?: string;
+  interviewId?: string;
 }
 
 export default function VapiInterviewForm() {
@@ -15,6 +17,8 @@ export default function VapiInterviewForm() {
   const [vapiCallData, setVapiCallData] = useState<VapiCallData | null>(null);
   const [formData, setFormData] = useState({
     username: "",
+    email: "",
+    interviewId: "",
     totalTimeMinutes: 5,
     jobTitle: "",
     jobDescription: "",
@@ -40,12 +44,19 @@ export default function VapiInterviewForm() {
     try {
       if (
         !formData.username ||
+        !formData.email ||
         !formData.jobTitle ||
         !formData.jobDescription ||
         !formData.resumeDescription ||
         !formData.compulsoryQuestions
       ) {
         throw new Error("Please fill in all required fields");
+      }
+
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(formData.email)) {
+        throw new Error("Please enter a valid email address");
       }
 
       const assistantId = String(
@@ -74,6 +85,8 @@ export default function VapiInterviewForm() {
       setVapiCallData({
         assistantId,
         systemPrompt,
+        email: formData.email.trim().toLowerCase(),
+        interviewId: formData.interviewId.trim() || undefined,
         variableValues: {
           username: formData.username.trim(),
           totalTimeMinutes: formData.totalTimeMinutes,
@@ -101,6 +114,8 @@ export default function VapiInterviewForm() {
     return (
       <VapiCallComponent
         callData={vapiCallData}
+        email={vapiCallData.email}
+        interviewId={vapiCallData.interviewId}
         onCallEnd={() => setVapiCallData(null)}
       />
     );
@@ -134,7 +149,36 @@ export default function VapiInterviewForm() {
                 required
               />
             </div>
+            {/* Email */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Email Address *
+              </label>
+              <input
+                type="email"
+                name="email"
+                value={formData.email}
+                onChange={handleInputChange}
+                placeholder="Enter your email address"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              />
+            </div>
 
+            {/* Interview ID (Optional) */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Interview ID (Optional)
+              </label>
+              <input
+                type="text"
+                name="interviewId"
+                value={formData.interviewId}
+                onChange={handleInputChange}
+                placeholder="Enter interview ID if available"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
             {/* Job Title */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">

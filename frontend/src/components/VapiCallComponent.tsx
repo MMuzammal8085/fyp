@@ -8,6 +8,8 @@ interface VapiCallComponentProps {
     systemPrompt: string;
     variableValues?: Record<string, any>;
   };
+  email?: string;
+  interviewId?: string;
   onCallEnd: () => void;
 }
 
@@ -15,6 +17,8 @@ type CallState = "idle" | "connecting" | "in-call" | "ended" | "error";
 
 export default function VapiCallComponent({
   callData,
+  email,
+  interviewId,
   onCallEnd,
 }: VapiCallComponentProps) {
   const vapiRef = useRef<any | null>(null);
@@ -42,9 +46,46 @@ export default function VapiCallComponent({
           setError("");
         });
 
-        vapi.on("call-end", () => {
-          console.log("Call ended");
+        vapi.on("call-end", async () => {
+          console.log("Call ended, saving transcript...");
           setCallState("ended");
+
+          // Save transcript to backend if email is provided
+          if (email && transcript) {
+            try {
+              console.log("📝 Sending transcript to backend for email:", email);
+              const response = await fetch(
+                `${import.meta.env.VITE_API_URL || "http://localhost:3000/api"}/vapi/save-transcript`,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    email: email.trim().toLowerCase(),
+                    transcript: transcript.trim(),
+                    interviewId: interviewId,
+                  }),
+                },
+              );
+
+              const result = await response.json();
+              if (result.success) {
+                console.log("✅ Transcript saved successfully");
+              } else {
+                console.warn("⚠️ Transcript save response:", result.message);
+              }
+            } catch (err) {
+              console.error("❌ Error saving transcript:", err);
+            }
+          } else {
+            if (!email) {
+              console.warn("⚠️ No email provided for transcript saving");
+            }
+            if (!transcript) {
+              console.warn("⚠️ No transcript to save");
+            }
+          }
         });
 
         vapi.on("error", (error: any) => {
