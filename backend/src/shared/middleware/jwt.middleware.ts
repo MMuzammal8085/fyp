@@ -28,6 +28,7 @@ export class JWTMiddleware implements NestMiddleware {
       /(^|\/)+user\/signup$/,
       /(^|\/)+user\/verify-otp$/,
       /(^|\/)+public\/interview-invites(\/.*)?$/,
+      /(^|\/)+vapi(\/.*)?$/,
     ];
 
     return publicRoutePatterns.some((pattern) => pattern.test(normalizedPath));

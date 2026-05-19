@@ -10,7 +10,7 @@ type BuildInterviewSystemPromptInput = {
   resumeSummary?: string;
 };
 
-function compactValue(value: any, maxLength = 1800): string {
+function compactValue(value: any, maxLength = 8000): string {
   if (value == null) return "";
 
   let text = "";
@@ -38,43 +38,40 @@ export function buildInterviewSystemPrompt(
   const resumeDataText = compactValue(input.resumeData);
   const resumeSummary = String(input.resumeSummary ?? "").trim();
 
-  const prompt = [
-    "You are a professional AI interview assistant conducting an HR interview for a job applicant.",
-    "Use only the data provided below. Do not invent facts, and do not ask unrelated questions.",
+  return [
+    "You are a professional HR interviewer for a live voice interview.",
+    "Speak naturally, one question at a time, and wait for the candidate to answer before continuing.",
     "",
-    `Candidate name: ${input.candidateName ?? "Candidate"}`,
-    `Invite token: ${input.inviteToken ?? "unknown"}`,
-    `Interview ID: ${input.interviewId ?? "unknown"}`,
-    `Job title: ${input.jobTitle ?? "unknown"}`,
+    `Candidate: ${input.candidateName ?? "Candidate"}`,
+    `Role: ${input.jobTitle ?? "the position"}`,
     input.interviewTimeMinutes
-      ? `Interview duration: ${input.interviewTimeMinutes} minutes`
-      : "Interview duration: use the available time carefully",
+      ? `Target duration: about ${input.interviewTimeMinutes} minutes`
+      : "Use time wisely",
     "",
-    "Job description:",
-    String(input.jobDescription ?? "").trim() || "No job description provided.",
+    "=== JOB DESCRIPTION ===",
+    String(input.jobDescription ?? "").trim() || "Not provided.",
     "",
-    "Resume data:",
-    resumeDataText || "No parsed resume data provided.",
+    "=== RESUME / CANDIDATE BACKGROUND ===",
+    resumeDataText || resumeSummary || "No resume data provided.",
     "",
-    "Resume summary:",
-    resumeSummary || "No resume summary provided.",
-    "",
-    "Compulsory questions to ask in order:",
+    "=== COMPULSORY QUESTIONS (must all be covered) ===",
     questions.length > 0
-      ? questions
-          .map((question, index) => `${index + 1}. ${question}`)
-          .join("\n")
-      : "No compulsory questions were provided.",
+      ? questions.map((q, i) => `${i + 1}. ${q}`).join("\n")
+      : "None provided.",
     "",
-    "Interview rules:",
-    "- Ask the compulsory questions in order before any optional follow-ups.",
-    "- Keep each question short, clear, and relevant to the role and resume data.",
-    "- Use the candidate answers to ask targeted follow-up questions when time allows.",
-    "- Capture every asked question and the candidate answer in structured results.",
-    "- At the end of the interview, produce a concise interview summary and an overall rating from 0 to 10.",
-    "- Make sure the final payload contains question_results, transcript, evaluation, interview_summary, overall_rating, resume_score if available, and resume_data if available.",
-    "- If time is limited, prioritize the compulsory questions and finish with a concise summary and rating.",
+    "=== INTERVIEW FLOW (follow this order) ===",
+    "PHASE 1 — Role & resume (about 60% of the interview):",
+    "- Greet the candidate briefly.",
+    "- Ask 3–5 tailored technical and experience questions based on the JOB DESCRIPTION and RESUME.",
+    "- Probe their answers with short follow-ups when needed.",
+    "",
+    "PHASE 2 — Compulsory questions (about 40%, organic conversation):",
+    "- Weave each COMPULSORY QUESTION into the dialogue naturally (do not read a numbered list).",
+    "- Transition smoothly, e.g. 'Building on that…' or 'I'd also like to understand…'.",
+    "- Ensure every compulsory question is answered before ending.",
+    "",
+    "CLOSING:",
+    "- Thank the candidate and end professionally.",
+    "- Do not invent facts not supported by the job description or resume.",
   ].join("\n");
-
-  return prompt;
 }

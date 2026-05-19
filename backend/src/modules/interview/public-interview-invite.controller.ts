@@ -483,6 +483,95 @@ export class PublicInterviewInviteController {
     }
   }
 
+  private buildSlimResumeAnalysis(groqResumeAnalysis: any) {
+    if (!groqResumeAnalysis || groqResumeAnalysis.error) return undefined;
+
+    const score =
+      typeof groqResumeAnalysis.score === 'number'
+        ? groqResumeAnalysis.score
+        : typeof groqResumeAnalysis.resume_score === 'number'
+          ? groqResumeAnalysis.resume_score
+          : undefined;
+
+    return {
+      resume_score: score,
+      skills_match: groqResumeAnalysis.skills_match,
+      experience_fit: groqResumeAnalysis.experience_fit,
+      summary: groqResumeAnalysis.summary,
+      match_reasons: groqResumeAnalysis.match_reasons ?? groqResumeAnalysis.strengths,
+      gaps: groqResumeAnalysis.gaps ?? groqResumeAnalysis.weaknesses,
+      generatedAt: groqResumeAnalysis.generatedAt,
+      resume_text: groqResumeAnalysis.resume_text,
+    };
+  }
+
+  private buildPrepareSessionResponse(input: {
+    invite: InterviewInvite;
+    interview: Interview;
+    existingResult?: any;
+    resumeDataForPrompt?: any;
+    resumeSummaryForPrompt?: string;
+    compulsory_questions: string[];
+    interviewTimeMinutes?: number;
+    parserWarning?: string;
+    message?: string;
+  }) {
+    const assistantId = String(process.env.VAPI_ASSISTANT_ID ?? '').trim();
+    if (!assistantId) {
+      throw new ServiceUnavailableException(
+        'Interview agent is not configured. Set VAPI_ASSISTANT_ID in backend/.env',
+      );
+    }
+
+    const job_title = String((input.interview as any).job_title ?? '').trim();
+    const job_description = String(
+      (input.interview as any).description ?? '',
+    ).trim();
+
+    const storedResumeText = String(
+      input.existingResult?.analysis?.resume_text ?? '',
+    ).trim();
+
+    const resumeData = input.resumeDataForPrompt ?? {
+      resume_text: storedResumeText || undefined,
+      skills: input.existingResult?.skills,
+      projects: input.existingResult?.projects,
+    };
+
+    const vapiPublicKey = String(
+      process.env.VAPI_PUBLIC_KEY ?? process.env.VITE_VAPI_PUBLIC_KEY ?? '',
+    ).trim();
+
+    if (!vapiPublicKey || vapiPublicKey.includes('your_public_key')) {
+      throw new ServiceUnavailableException(
+        'Vapi public key is not configured. Set VAPI_PUBLIC_KEY in backend/.env (from Vapi dashboard → API Keys → Public Key).',
+      );
+    }
+
+    return {
+      message: input.message ?? 'Prepared',
+      email: input.invite.email,
+      inviteToken: input.invite.token,
+      interviewId: input.invite.interviewId,
+      jobTitle: job_title,
+      jobDescription: job_description,
+      compulsoryQuestions: input.compulsory_questions,
+      interviewTimeMinutes: input.interviewTimeMinutes,
+      resumeData,
+      resumeSummary:
+        input.resumeSummaryForPrompt ??
+        input.existingResult?.projects ??
+        input.existingResult?.skills,
+      meetingUrl: this.getMeetingUrl(input.invite.roomId),
+      assistantId,
+      vapiPublicKey,
+      overall_score: input.existingResult?.overall_score,
+      overall_rating: input.existingResult?.overall_rating,
+      resume_score: input.existingResult?.resume_score,
+      parserWarning: input.parserWarning,
+    };
+  }
+
   private async formatInviteResponse(invite: InterviewInvite) {
     let interview: Interview | null = null;
     try {
@@ -561,18 +650,22 @@ export class PublicInterviewInviteController {
         });
       }
 
-      const assistantId = String(process.env.VAPI_ASSISTANT_ID ?? '').trim();
-      if (!assistantId) {
-        throw new ServiceUnavailableException(
-          'Interview agent is not configured. Set VAPI_ASSISTANT_ID in backend/.env',
-        );
-      }
+      const compulsory_questions = Array.isArray((interview as any).questions)
+        ? (interview as any).questions
+        : [];
+      const interviewTimeMinutes =
+        typeof (interview as any).durationMinutes === 'number'
+          ? (interview as any).durationMinutes
+          : undefined;
 
-      return {
+      return this.buildPrepareSessionResponse({
+        invite,
+        interview,
+        existingResult: existingResults,
+        compulsory_questions,
+        interviewTimeMinutes,
         message: 'Already prepared',
-        meetingUrl: this.getMeetingUrl(invite.roomId),
-        assistantId,
-      };
+      });
     }
 
     const username = String(body?.username ?? '').trim();
@@ -641,19 +734,31 @@ export class PublicInterviewInviteController {
 
     // ONLY use Groq score if analysis succeeded (has valid resume_score)
     // Don't fall back to parser or local scores - these are not real AI analysis
+    const groqScore =
+      typeof groqResumeAnalysis?.score === 'number'
+        ? groqResumeAnalysis.score
+        : typeof groqResumeAnalysis?.resume_score === 'number'
+          ? groqResumeAnalysis.resume_score
+          : undefined;
+
     const hasValidGroqAnalysis =
-      groqResumeAnalysis &&
-      typeof groqResumeAnalysis?.resume_score === 'number' &&
-      !groqResumeAnalysis?.error;
+      groqResumeAnalysis && typeof groqScore === 'number' && !groqResumeAnalysis?.error;
 
     this.logger.log(
       `📊 Resume scoring validation:\n  Groq analysis exists: ${!!groqResumeAnalysis}\n  Has resume_score: ${typeof groqResumeAnalysis?.resume_score === 'number'}\n  Has error: ${!!groqResumeAnalysis?.error}\n  Valid for use: ${hasValidGroqAnalysis}`,
     );
 
     // Only use Groq score - never use fallback keyword matching scores
+    const parserScore =
+      typeof parserResult?.score === 'number'
+        ? parserResult.score
+        : parsedResume.parserResumeScore;
+
     const dbResumeScore = hasValidGroqAnalysis
-      ? groqResumeAnalysis.resume_score
-      : undefined;
+      ? groqScore
+      : typeof parserScore === 'number'
+        ? parserScore
+        : undefined;
 
     const overall_score = dbResumeScore;
     const overall_rating = dbResumeScore
@@ -680,9 +785,34 @@ export class PublicInterviewInviteController {
       } as any,
     );
 
-    // Only save scores if they came from real Groq analysis
-    // Save analysis even if it contains error (so we know what went wrong)
-    const resultPayload: any = {
+    let slimAnalysis = hasValidGroqAnalysis
+      ? this.buildSlimResumeAnalysis(groqResumeAnalysis)
+      : typeof parserScore === 'number'
+        ? {
+            resume_score: parserScore,
+            match_reasons: parserResult?.match_reasons ?? [],
+            gaps: parserResult?.gaps ?? [],
+            summary: parserResult?.summary,
+          }
+        : undefined;
+
+    if (slimAnalysis && extractedResumeText) {
+      slimAnalysis = { ...slimAnalysis, resume_text: extractedResumeText.slice(0, 8000) };
+    }
+
+    const skillsText = hasValidGroqAnalysis
+      ? (groqResumeAnalysis?.match_reasons ?? groqResumeAnalysis?.strengths ?? [])
+          .slice(0, 8)
+          .join(', ')
+      : parserResult?.match_reasons?.slice(0, 8).join(', ');
+
+    const projectsText = hasValidGroqAnalysis
+      ? String(groqResumeAnalysis?.summary ?? '').slice(0, 1000)
+      : extractedResumeText
+        ? extractedResumeText.slice(0, 500)
+        : undefined;
+
+    await this.interviewResultService.upsertPrepared({
       interviewId: invite.interviewId,
       inviteToken: invite.token,
       createdBy: invite.createdBy,
@@ -692,67 +822,34 @@ export class PublicInterviewInviteController {
       applicant_email: invite.email,
       resumeUrl: uploaded.secureUrl,
       compulsory_questions,
-    };
-
-    // Only add scores if Groq analysis succeeded
-    if (hasValidGroqAnalysis) {
-      resultPayload.resume_score = dbResumeScore;
-      resultPayload.overall_score = dbResumeScore;
-      resultPayload.overall_rating = overall_rating;
-      resultPayload.skills = groqResumeAnalysis?.strengths
-        ? groqResumeAnalysis.strengths.join(', ')
-        : undefined;
-      resultPayload.projects = groqResumeAnalysis?.summary
-        ? groqResumeAnalysis.summary
-        : undefined;
-      this.logger.log(
-        `✅ Saving REAL Groq analysis: score=${dbResumeScore}, rating=${overall_rating}`,
-      );
-    } else {
-      this.logger.warn(
-        `⚠️ Groq analysis failed or missing - NO scores saved, only resume_data`,
-      );
-      // Still save what we have for debugging
-      resultPayload.resume_data = parserResult;
-    }
-
-    // Always save analysis (even if it's an error object) for transparency
-    resultPayload.analysis = hasValidGroqAnalysis
-      ? groqResumeAnalysis
-      : undefined;
-
-    await this.interviewResultService.upsertPrepared(resultPayload);
-
-    const assistantId = String(process.env.VAPI_ASSISTANT_ID ?? '').trim();
-    if (!assistantId) {
-      throw new ServiceUnavailableException(
-        'Interview agent is not configured. Set VAPI_ASSISTANT_ID in backend/.env',
-      );
-    }
-
-    this.logger.log(
-      `Returning prepare response with assistantId: ${assistantId.substring(0, 20)}...`,
-    );
-
-    return {
-      message: 'Prepared',
-      email: invite.email,
-      inviteToken: invite.token,
-      interviewId: invite.interviewId,
-      jobTitle: job_title,
-      jobDescription: job_description,
-      compulsoryQuestions: compulsory_questions,
-      interviewTimeMinutes,
-      resumeData: resumeDataForPrompt,
-      resumeSummary: resumeSummaryForPrompt,
-      meetingUrl: this.getMeetingUrl(invite.roomId),
-      assistantId,
+      resume_score: dbResumeScore,
       overall_score,
       overall_rating,
-      resume_score: dbResumeScore,
-      groqResumeAnalysis,
+      skills: skillsText || undefined,
+      projects: projectsText || undefined,
+      analysis: slimAnalysis,
+    });
+
+    this.logger.log(
+      `Returning prepare response (resume_score=${dbResumeScore ?? 'n/a'})`,
+    );
+
+    return this.buildPrepareSessionResponse({
+      invite,
+      interview,
+      resumeDataForPrompt,
+      resumeSummaryForPrompt,
+      compulsory_questions,
+      interviewTimeMinutes,
       parserWarning: parserError,
-    };
+      existingResult: {
+        overall_score,
+        overall_rating,
+        resume_score: dbResumeScore,
+        skills: skillsText,
+        projects: projectsText,
+      },
+    });
   }
 
   @Post(':token/complete')

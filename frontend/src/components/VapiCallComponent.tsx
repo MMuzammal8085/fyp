@@ -22,6 +22,7 @@ export default function VapiCallComponent({
   onCallEnd,
 }: VapiCallComponentProps) {
   const vapiRef = useRef<any | null>(null);
+  const transcriptRef = useRef("");
   const [callState, setCallState] = useState<CallState>("connecting");
   const [error, setError] = useState<string>("");
   const [transcript, setTranscript] = useState<string>("");
@@ -50,24 +51,24 @@ export default function VapiCallComponent({
           console.log("Call ended, saving transcript...");
           setCallState("ended");
 
-          // Save transcript to backend if email is provided
-          if (email && transcript) {
+          const finalTranscript = transcriptRef.current.trim();
+
+          if (email && finalTranscript) {
             try {
+              const apiBase =
+                import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
               console.log("📝 Sending transcript to backend for email:", email);
-              const response = await fetch(
-                `${import.meta.env.VITE_API_URL || "http://localhost:3000/api"}/vapi/save-transcript`,
-                {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify({
-                    email: email.trim().toLowerCase(),
-                    transcript: transcript.trim(),
-                    interviewId: interviewId,
-                  }),
+              const response = await fetch(`${apiBase}/vapi/save-transcript`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
                 },
-              );
+                body: JSON.stringify({
+                  email: email.trim().toLowerCase(),
+                  transcript: finalTranscript,
+                  interviewId: interviewId,
+                }),
+              });
 
               const result = await response.json();
               if (result.success) {
@@ -82,7 +83,7 @@ export default function VapiCallComponent({
             if (!email) {
               console.warn("⚠️ No email provided for transcript saving");
             }
-            if (!transcript) {
+            if (!finalTranscript) {
               console.warn("⚠️ No transcript to save");
             }
           }
@@ -97,7 +98,12 @@ export default function VapiCallComponent({
         vapi.on("message", (message: any) => {
           console.log("Message:", message);
           if (message.type === "transcript" && message.transcript) {
-            setTranscript((prev) => prev + "\n" + message.transcript);
+            const role = String(message.role ?? "speaker").trim();
+            const line = `${role}: ${String(message.transcript).trim()}`;
+            transcriptRef.current = transcriptRef.current
+              ? `${transcriptRef.current}\n${line}`
+              : line;
+            setTranscript(transcriptRef.current);
           }
         });
 

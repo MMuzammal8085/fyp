@@ -179,6 +179,88 @@ export class InterviewResultService {
     return Number((average / scored.length).toFixed(1));
   }
 
+  /** Persist only the fields used on the interview_results document at prepare time. */
+  private buildPreparedDocument(input: {
+    interviewId: string;
+    inviteToken: string;
+    createdBy: string;
+    job_title: string;
+    job_description: string;
+    applicant_name: string;
+    applicant_email?: string;
+    resumeUrl?: string;
+    compulsory_questions: string[];
+    resume_score?: number;
+    overall_score?: number;
+    overall_rating?: number;
+    skills?: string;
+    projects?: string;
+    analysis?: any;
+  }) {
+    const cleanEmail = String(input.applicant_email ?? '')
+      .trim()
+      .toLowerCase();
+
+    const doc: any = {
+      interviewId: input.interviewId,
+      inviteToken: input.inviteToken,
+      createdBy: input.createdBy,
+      job_title: input.job_title,
+      job_description: input.job_description,
+      applicant_name: input.applicant_name,
+      compulsory_questions: input.compulsory_questions ?? [],
+      question_results: [],
+      status: 'prepared',
+    };
+
+    if (cleanEmail) doc.applicant_email = cleanEmail;
+    if (input.resumeUrl) doc.resumeUrl = input.resumeUrl;
+    if (input.resume_score !== undefined) doc.resume_score = input.resume_score;
+    if (input.overall_score !== undefined) doc.overall_score = input.overall_score;
+    if (input.overall_rating !== undefined) {
+      doc.overall_rating = this.normalizeTenPointRating(input.overall_rating);
+    }
+    if (input.skills !== undefined) doc.skills = input.skills;
+    if (input.projects !== undefined) doc.projects = input.projects;
+    if (input.analysis !== undefined) doc.analysis = input.analysis;
+
+    return doc;
+  }
+
+  async markInProgress(input: {
+    inviteToken?: string;
+    interviewId?: string;
+    applicant_email?: string;
+    vapi_call_id?: string;
+  }): Promise<InterviewResult | null> {
+    const cleanEmail = String(input.applicant_email ?? '')
+      .trim()
+      .toLowerCase();
+
+    let existing: InterviewResult | null = null;
+
+    if (input.inviteToken) {
+      existing = await this.findByInviteToken(input.inviteToken);
+    }
+    if (!existing && input.interviewId && cleanEmail) {
+      existing = await this.findByInterviewIdAndApplicantEmail(
+        input.interviewId,
+        cleanEmail,
+      );
+    }
+    if (!existing && cleanEmail) {
+      existing = await this.findByApplicantEmail(cleanEmail);
+    }
+
+    if (!existing) return null;
+
+    const update: any = { status: 'in_progress' };
+    if (input.vapi_call_id) update.vapi_call_id = input.vapi_call_id;
+
+    await this.repo.update({ _id: existing._id } as any, update);
+    return await this.repo.findOne({ where: { _id: existing._id } as any });
+  }
+
   async upsertPrepared(input: {
     interviewId: string;
     inviteToken: string;
@@ -189,78 +271,23 @@ export class InterviewResultService {
     applicant_email?: string;
     resumeUrl?: string;
     compulsory_questions: string[];
-    question_results?: any[];
-    resume_data?: any;
-    overall_score?: number;
     resume_score?: number;
-    interview_summary?: string;
+    overall_score?: number;
     overall_rating?: number;
     skills?: string;
     projects?: string;
     analysis?: any;
   }): Promise<InterviewResult | null> {
-    const resumeScore =
-      input.resume_score !== undefined
-        ? input.resume_score
-        : input.overall_score;
-    const cleanApplicantEmail = String(input.applicant_email ?? '')
-      .trim()
-      .toLowerCase();
-
     const existing = await this.findByInviteToken(input.inviteToken);
+    const doc = this.buildPreparedDocument(input);
 
     if (!existing) {
-      const created = this.repo.create({
-        ...input,
-        ...(cleanApplicantEmail
-          ? { applicant_email: cleanApplicantEmail }
-          : {}),
-        ...(resumeScore !== undefined ? { resume_score: resumeScore } : {}),
-        ...(resumeScore !== undefined ? { overall_score: resumeScore } : {}),
-        ...(input.question_results
-          ? { question_results: input.question_results }
-          : {}),
-        status: 'prepared',
-      } as any);
-
+      const created = this.repo.create(doc as any);
       const saved = await this.repo.save(created as any);
       return Array.isArray(saved) ? (saved[0] as any) : (saved as any);
     }
 
-    const updateDoc: any = {
-      interviewId: input.interviewId,
-      createdBy: input.createdBy,
-      job_title: input.job_title,
-      job_description: input.job_description,
-      applicant_name: input.applicant_name,
-      applicant_email: cleanApplicantEmail || input.applicant_email,
-      resumeUrl: input.resumeUrl,
-      compulsory_questions: input.compulsory_questions,
-      ...(input.question_results
-        ? { question_results: input.question_results }
-        : {}),
-      status: 'prepared',
-    };
-
-    if (input.resume_data !== undefined)
-      updateDoc.resume_data = input.resume_data;
-    if (cleanApplicantEmail) updateDoc.applicant_email = cleanApplicantEmail;
-    if (resumeScore !== undefined) {
-      updateDoc.resume_score = resumeScore;
-      updateDoc.overall_score = resumeScore;
-    }
-    if (input.skills !== undefined) updateDoc.skills = input.skills;
-    if (input.projects !== undefined) updateDoc.projects = input.projects;
-    if (input.interview_summary !== undefined)
-      updateDoc.interview_summary = input.interview_summary;
-    if (input.overall_rating !== undefined)
-      updateDoc.overall_rating = this.normalizeTenPointRating(
-        input.overall_rating,
-      );
-    if (input.analysis !== undefined) updateDoc.analysis = input.analysis;
-
-    await this.repo.update({ _id: existing._id } as any, updateDoc);
-
+    await this.repo.update({ _id: existing._id } as any, doc);
     return await this.repo.findOne({ where: { _id: existing._id } as any });
   }
 

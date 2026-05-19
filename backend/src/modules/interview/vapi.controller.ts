@@ -22,10 +22,46 @@ export class VapiController {
     private readonly interviewResultService: InterviewResultService,
   ) {}
 
+  private validateWebhookSecret(vapiSecret: string | undefined) {
+    const webhookSecret = String(process.env.VAPI_WEBHOOK_SECRET ?? '').trim();
+    if (!webhookSecret) {
+      this.logger.warn('VAPI_WEBHOOK_SECRET is not configured');
+      return;
+    }
+    if (vapiSecret !== webhookSecret) {
+      this.logger.error('❌ Invalid webhook secret');
+      throw new UnauthorizedException('Invalid webhook secret');
+    }
+  }
+
+  /**
+   * POST /vapi/webhook
+   * Unified Vapi server URL handler (tool-calls, end-of-call-report, etc.)
+   */
+  @Post('webhook')
+  @HttpCode(HttpStatus.OK)
+  async handleWebhook(
+    @Body() payload: any,
+    @Headers('x-vapi-secret') vapiSecret: string,
+  ) {
+    this.logger.log('🔔 Vapi webhook received');
+    this.logger.debug(`Payload keys: ${Object.keys(payload ?? {}).join(', ')}`);
+    this.validateWebhookSecret(vapiSecret);
+
+    try {
+      return await this.vapiService.handleServerMessage(payload);
+    } catch (error: any) {
+      this.logger.error(
+        `❌ Webhook handler error: ${error.message}`,
+        error.stack,
+      );
+      throw new BadRequestException('Failed to process Vapi webhook');
+    }
+  }
+
   /**
    * POST /vapi/tool-calls
-   * Webhook endpoint for Vapi tool calls
-   * Validates the secret header and processes tool calls
+   * Legacy tool-call webhook endpoint
    */
   @Post('tool-calls')
   @HttpCode(HttpStatus.OK)
@@ -33,73 +69,11 @@ export class VapiController {
     @Body() payload: VapiToolCallDto,
     @Headers('x-vapi-secret') vapiSecret: string,
   ) {
-    // Log incoming webhook
-    this.logger.log('🔔 Webhook received from VAPI');
-    this.logger.debug(`Full payload: ${JSON.stringify(payload, null, 2)}`);
-
-    // Validate webhook secret
-    const webhookSecret = String(process.env.VAPI_WEBHOOK_SECRET ?? '').trim();
-    if (vapiSecret !== webhookSecret) {
-      this.logger.error('❌ Invalid webhook secret');
-      throw new UnauthorizedException('Invalid webhook secret');
-    }
+    this.logger.log('🔔 Tool-calls webhook received from VAPI');
+    this.validateWebhookSecret(vapiSecret);
 
     try {
-      const toolCallList = payload?.message?.toolCallList || [];
-      this.logger.log(`📋 Tool call list length: ${toolCallList.length}`);
-
-      if (!Array.isArray(toolCallList) || toolCallList.length === 0) {
-        this.logger.warn('⚠️ No tool calls in webhook payload');
-        // No tool calls to process
-        return {
-          results: [],
-        };
-      }
-
-      const results: Array<{
-        toolCallId: string;
-        result: { ok: boolean; message: string };
-      }> = [];
-
-      for (const toolCall of toolCallList) {
-        try {
-          const toolCallId = toolCall.toolCallId;
-          const functionName = toolCall.function?.name || '';
-          const args = toolCall.function?.arguments || {};
-
-          this.logger.log(
-            `🔧 Processing tool call: ${functionName} (id: ${toolCallId})`,
-          );
-          this.logger.debug(`Tool arguments: ${JSON.stringify(args, null, 2)}`);
-
-          const result = await this.vapiService.handleToolCall(
-            toolCallId,
-            functionName,
-            args,
-          );
-          results.push(result);
-          this.logger.log(
-            `✅ Tool call ${functionName} processed successfully`,
-          );
-        } catch (error: any) {
-          this.logger.error(
-            `❌ Error processing individual tool call: ${error.message}`,
-            error.stack,
-          );
-          // Still return a result so the call doesn't fail
-          if (toolCall.toolCallId) {
-            results.push({
-              toolCallId: toolCall.toolCallId,
-              result: { ok: true, message: 'Processed with error' },
-            });
-          }
-        }
-      }
-
-      this.logger.log(
-        `✨ Webhook processing complete. Results: ${results.length}`,
-      );
-      return { results };
+      return await this.vapiService.handleServerMessage(payload);
     } catch (error: any) {
       this.logger.error(
         `❌ Error in tool call webhook handler: ${error.message}`,
@@ -110,92 +84,89 @@ export class VapiController {
   }
 
   /**
+   * POST /vapi/call-started
+   * Marks interview result as in_progress when the Vapi call connects
+   */
+  @Post('call-started')
+  @HttpCode(HttpStatus.OK)
+  async callStarted(@Body() body: any) {
+    const email = String(body?.email ?? body?.applicant_email ?? '')
+      .trim()
+      .toLowerCase();
+    if (!email) {
+      throw new BadRequestException('Email is required');
+    }
+
+    const updated = await this.interviewResultService.markInProgress({
+      applicant_email: email,
+      interviewId: String(body?.interviewId ?? '').trim() || undefined,
+      inviteToken: String(body?.inviteToken ?? '').trim() || undefined,
+      vapi_call_id: String(body?.vapi_call_id ?? body?.callId ?? '').trim() || undefined,
+    });
+
+    return {
+      success: Boolean(updated),
+      status: updated?.status ?? 'prepared',
+    };
+  }
+
+  /**
    * POST /vapi/save-transcript
-   * Saves the transcript captured by the frontend after the call ends
-   * Updates the interview result record with the transcript for a specific email
+   * Saves transcript from frontend after call ends and runs Groq analysis
    */
   @Post('save-transcript')
   @HttpCode(HttpStatus.OK)
-  async saveTranscript(
-    @Body() body: { email: string; transcript: string; interviewId?: string },
-  ) {
-    this.logger.log(`📝 Saving transcript for email: ${body.email}`);
-
-    if (!body.email || !body.transcript) {
-      throw new BadRequestException('Email and transcript are required');
-    }
+  async saveTranscript(@Body() body: any) {
+    this.logger.log('📝 save-transcript request received');
 
     try {
-      const email = String(body.email).trim().toLowerCase();
-      const transcript = String(body.transcript).trim();
+      const email = String(
+        body?.email ?? body?.applicant_email ?? '',
+      )
+        .trim()
+        .toLowerCase();
 
-      if (!email || !transcript) {
-        throw new BadRequestException('Email and transcript cannot be empty');
+      const transcript = this.vapiService.extractTranscriptFromPayload(body);
+
+      if (!email) {
+        throw new BadRequestException('Email is required');
       }
+      if (!transcript) {
+        throw new BadRequestException('Transcript is required');
+      }
+
+      const interviewId = String(body?.interviewId ?? '').trim() || undefined;
+      const inviteToken = String(body?.inviteToken ?? '').trim() || undefined;
 
       this.logger.log(
-        `🔍 Looking up interview result for email: ${email}`,
+        `💾 Persisting transcript (${transcript.length} chars) for ${email}`,
       );
 
-      let existing = null;
+      const saved = await this.vapiService.persistTranscriptAndAnalysis({
+        email,
+        interviewId,
+        inviteToken,
+        transcript,
+        vapi_call_id: String(body?.vapi_call_id ?? body?.callId ?? '').trim() || undefined,
+        jobTitle: body?.jobTitle,
+        jobDescription: body?.jobDescription,
+      });
 
-      // If interviewId is provided, use it for lookup
-      if (body.interviewId) {
-        const interviewId = String(body.interviewId).trim();
-        this.logger.log(
-          `🔍 Looking up by interviewId + email: ${interviewId} / ${email}`,
-        );
-        existing =
-          await this.interviewResultService.findByInterviewIdAndApplicantEmail(
-            interviewId,
-            email,
-          );
-      }
-
-      // Fallback to email-only lookup
-      if (!existing) {
-        this.logger.log(`🔍 Looking up by email only: ${email}`);
-        existing = await this.interviewResultService.findByApplicantEmail(
-          email,
-        );
-      }
-
-      if (!existing) {
-        this.logger.warn(`⚠️ No existing interview result found for ${email}`);
+      if (!saved) {
         return {
           success: false,
           message: 'No interview result found for this email',
         };
       }
 
-      this.logger.log(
-        `✅ Found existing interview result: ${(existing as any)?._id}`,
-      );
-
-      // Update with transcript
-      const updatePayload: any = {
-        transcript,
-      };
-
-      this.logger.log(
-        `💾 Updating record with transcript (length: ${transcript.length})`,
-      );
-
-      await this.interviewResultService.markCompleted({
-        ...existing,
-        ...updatePayload,
-      });
-
-      this.logger.log(
-        `✅ Transcript saved successfully for email: ${email}`,
-      );
-
       return {
         success: true,
-        message: 'Transcript saved successfully',
+        message: 'Transcript saved and analyzed successfully',
         email,
+        id: (saved as any)?._id,
       };
     } catch (error: any) {
+      if (error instanceof BadRequestException) throw error;
       this.logger.error(
         `❌ Error saving transcript: ${error.message}`,
         error.stack,
@@ -206,3 +177,4 @@ export class VapiController {
     }
   }
 }
+

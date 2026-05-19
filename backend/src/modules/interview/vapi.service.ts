@@ -36,15 +36,229 @@ export class VapiService {
     private readonly groqInterviewAnalysisService: GroqInterviewAnalysisService,
   ) {}
 
-  /**
-   * Handle tool call webhook from Vapi
-   * Saves interview results when the assistant calls save_interview_results tool
-   */
+  parseToolArguments(raw: unknown): ToolCallArguments {
+    if (!raw) return {};
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        return typeof parsed === 'object' && parsed ? parsed : {};
+      } catch {
+        this.logger.warn('Tool call arguments were a non-JSON string');
+        return {};
+      }
+    }
+    if (typeof raw === 'object') return raw as ToolCallArguments;
+    return {};
+  }
+
+  extractTranscriptFromPayload(body: any): string {
+    const candidates = [
+      body?.transcript,
+      body?.message?.transcript,
+      body?.message?.artifact?.transcript,
+      body?.artifact?.transcript,
+      body?.analysis?.transcript,
+      body?.call?.transcript,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+
+    const messages =
+      body?.message?.artifact?.messages ??
+      body?.artifact?.messages ??
+      body?.messages;
+
+    if (Array.isArray(messages) && messages.length > 0) {
+      const lines = messages
+        .map((entry: any) => {
+          const role = String(entry?.role ?? entry?.speaker ?? 'speaker').trim();
+          const text = String(
+            entry?.message ?? entry?.content ?? entry?.text ?? entry?.transcript ?? '',
+          ).trim();
+          return text ? `${role}: ${text}` : '';
+        })
+        .filter(Boolean);
+      if (lines.length > 0) return lines.join('\n');
+    }
+
+    return '';
+  }
+
+  extractCallMetadata(body: any): {
+    callId?: string;
+    email?: string;
+    interviewId?: string;
+    inviteToken?: string;
+  } {
+    const call = body?.message?.call ?? body?.call ?? {};
+    const customer = call?.customer ?? body?.customer ?? {};
+    const variableValues =
+      call?.assistantOverrides?.variableValues ??
+      body?.message?.assistantOverrides?.variableValues ??
+      {};
+
+    return {
+      callId: String(call?.id ?? body?.callId ?? body?.vapi_call_id ?? '').trim() || undefined,
+      email: String(
+        customer?.email ??
+          variableValues?.email ??
+          body?.email ??
+          body?.applicant_email ??
+          '',
+      )
+        .trim()
+        .toLowerCase() || undefined,
+      interviewId: String(
+        variableValues?.interviewId ?? body?.interviewId ?? '',
+      ).trim() || undefined,
+      inviteToken: String(
+        variableValues?.inviteToken ?? body?.inviteToken ?? '',
+      ).trim() || undefined,
+    };
+  }
+
+  async persistTranscriptAndAnalysis(input: {
+    email?: string;
+    interviewId?: string;
+    inviteToken?: string;
+    transcript: string;
+    vapi_call_id?: string;
+    jobTitle?: string;
+    jobDescription?: string;
+    compulsoryQuestions?: string[];
+    existingRecord?: any;
+  }) {
+    const transcript = String(input.transcript ?? '').trim();
+    if (!transcript) {
+      this.logger.warn('persistTranscriptAndAnalysis called with empty transcript');
+      return null;
+    }
+
+    let existing = input.existingRecord ?? null;
+
+    if (!existing && input.inviteToken) {
+      existing = await this.interviewResultService.findByInviteToken(
+        input.inviteToken,
+      );
+    }
+
+    if (!existing && input.interviewId && input.email) {
+      existing =
+        await this.interviewResultService.findByInterviewIdAndApplicantEmail(
+          input.interviewId,
+          input.email,
+        );
+    }
+
+    if (!existing && input.email) {
+      existing = await this.interviewResultService.findByApplicantEmail(
+        input.email,
+      );
+    }
+
+    let groqAnalysis: any;
+    try {
+      groqAnalysis = await this.groqInterviewAnalysisService.analyzeTranscript({
+        transcript,
+        jobTitle: input.jobTitle ?? existing?.job_title,
+        jobDescription: input.jobDescription ?? existing?.job_description,
+        compulsoryQuestions:
+          input.compulsoryQuestions ?? existing?.compulsory_questions,
+        resumeData: existing?.resume_data,
+      });
+    } catch (error: any) {
+      this.logger.error(`Groq analysis during transcript persist failed: ${error?.message}`);
+    }
+
+    const groqSummary =
+      typeof groqAnalysis?.summary === 'string' ? groqAnalysis.summary : undefined;
+    const groqRating =
+      typeof groqAnalysis?.overall_rating === 'number'
+        ? groqAnalysis.overall_rating
+        : undefined;
+
+    return this.interviewResultService.markCompleted({
+      inviteToken: input.inviteToken ?? existing?.inviteToken,
+      interviewId: input.interviewId ?? existing?.interviewId,
+      createdBy: existing?.createdBy,
+      applicant_name: existing?.applicant_name ?? 'Candidate',
+      applicant_email: input.email ?? existing?.applicant_email,
+      job_title: input.jobTitle ?? existing?.job_title,
+      job_description: input.jobDescription ?? existing?.job_description,
+      compulsory_questions: existing?.compulsory_questions,
+      question_results: existing?.question_results,
+      resume_data: existing?.resume_data,
+      resume_score: existing?.resume_score,
+      transcript,
+      analysis: groqAnalysis,
+      interview_summary: groqSummary ?? existing?.interview_summary,
+      overall_rating: groqRating ?? existing?.overall_rating,
+      vapi_call_id: input.vapi_call_id ?? existing?.vapi_call_id,
+    });
+  }
+
+  async handleServerMessage(body: any) {
+    const messageType = String(body?.message?.type ?? body?.type ?? '').trim();
+    this.logger.log(`📨 Vapi server message type: ${messageType || 'unknown'}`);
+
+    if (messageType === 'tool-calls') {
+      const toolCallList = body?.message?.toolCallList ?? [];
+      const results: Array<{
+        toolCallId: string;
+        result: { ok: boolean; message: string };
+      }> = [];
+      for (const toolCall of toolCallList) {
+        const result = await this.handleToolCall(
+          toolCall.toolCallId,
+          toolCall.function?.name || '',
+          this.parseToolArguments(toolCall.function?.arguments),
+        );
+        results.push(result);
+      }
+      return { results };
+    }
+
+    if (
+      messageType === 'end-of-call-report' ||
+      messageType === 'status-update'
+    ) {
+      const transcript = this.extractTranscriptFromPayload(body);
+      const meta = this.extractCallMetadata(body);
+
+      if (!transcript) {
+        this.logger.warn(`No transcript found in ${messageType} payload`);
+        return { ok: true, saved: false, reason: 'no_transcript' };
+      }
+
+      const saved = await this.persistTranscriptAndAnalysis({
+        email: meta.email,
+        interviewId: meta.interviewId,
+        inviteToken: meta.inviteToken,
+        transcript,
+        vapi_call_id: meta.callId,
+      });
+
+      return {
+        ok: true,
+        saved: Boolean(saved),
+        messageType,
+      };
+    }
+
+    return { ok: true, ignored: true, messageType };
+  }
+
   async handleToolCall(
     toolCallId: string,
     functionName: string,
-    arguments_: ToolCallArguments,
+    rawArguments: ToolCallArguments | string,
   ) {
+    const arguments_ = this.parseToolArguments(rawArguments);
+
     this.logger.log(
       `🔧 Handling tool call: ${functionName} (ID: ${toolCallId})`,
     );
@@ -78,16 +292,6 @@ export class VapiService {
           arguments_.inviteToken ?? interview?.inviteToken ?? '',
         ).trim();
 
-        this.logger.log(
-          `📝 Extracted metadata: candidateName=${candidateName}, applicantEmail=${applicantEmail}`,
-        );
-        this.logger.log(
-          `📝 Interview IDs: interviewId=${interviewId}, inviteToken=${inviteToken}`,
-        );
-        this.logger.log(
-          `📝 Interview object keys: ${interview ? Object.keys(interview).join(', ') : 'no interview object'}`,
-        );
-
         const rawQuestionResults =
           arguments_.question_results ??
           arguments_.questionResults ??
@@ -95,49 +299,23 @@ export class VapiService {
           interview?.questionResults ??
           [];
 
-        this.logger.log(
-          `📋 Raw question results count: ${Array.isArray(rawQuestionResults) ? rawQuestionResults.length : 0}`,
-        );
-        this.logger.debug(
-          `Raw question results: ${JSON.stringify(rawQuestionResults, null, 2)}`,
-        );
-
         let questionResults: Array<any> = [];
-        if (
-          Array.isArray(rawQuestionResults) &&
-          rawQuestionResults.length > 0
-        ) {
+        if (Array.isArray(rawQuestionResults) && rawQuestionResults.length > 0) {
           questionResults = rawQuestionResults;
-          this.logger.log(
-            `✅ Using question_results array (${questionResults.length} items)`,
-          );
-        } else if (interview && typeof interview === 'object') {
-          if (
-            Array.isArray(interview.questions) &&
-            Array.isArray(interview.answers)
-          ) {
-            questionResults = (interview.questions as string[]).map(
-              (q, idx) => ({
-                question: q,
-                answer: interview.answers[idx] || '',
-                score: 0,
-                maxScore: 10,
-                status: 'answered',
-                order: idx + 1,
-              }),
-            );
-            this.logger.log(
-              `✅ Constructed question_results from interview.questions/answers (${questionResults.length} items)`,
-            );
-          } else {
-            this.logger.warn(
-              `⚠️ No questions/answers arrays in interview object`,
-            );
-          }
-        } else {
-          this.logger.warn(
-            `⚠️ No question_results provided and no interview.questions/answers`,
-          );
+        } else if (
+          interview &&
+          typeof interview === 'object' &&
+          Array.isArray(interview.questions) &&
+          Array.isArray(interview.answers)
+        ) {
+          questionResults = (interview.questions as string[]).map((q, idx) => ({
+            question: q,
+            answer: interview.answers[idx] || '',
+            score: 0,
+            maxScore: 10,
+            status: 'answered',
+            order: idx + 1,
+          }));
         }
 
         const overallScore =
@@ -169,17 +347,14 @@ export class VapiService {
               '',
           ).trim() || undefined;
 
-        // Extract transcript safely
-        const transcriptText = String(
-          arguments_.transcript ?? interview?.transcript ?? '',
-        ).trim();
+        const transcriptText =
+          this.extractTranscriptFromPayload(arguments_) ||
+          String(arguments_.transcript ?? interview?.transcript ?? '').trim();
 
         this.logger.log(`📝 Transcript length: ${transcriptText.length} chars`);
 
-        // Analyze transcript with Groq if available
         let groqAnalysis: any = undefined;
-        if (transcriptText && transcriptText.length > 0) {
-          this.logger.log(`🔄 Starting Groq transcript analysis...`);
+        if (transcriptText) {
           try {
             groqAnalysis =
               await this.groqInterviewAnalysisService.analyzeTranscript({
@@ -194,24 +369,18 @@ export class VapiService {
                       interview?.jobDescription ??
                       '',
                   ).trim() || undefined,
-                compulsoryQuestions: Array.isArray(questionResults)
-                  ? questionResults.map((q: any) => String(q?.question ?? ''))
-                  : undefined,
+                compulsoryQuestions: questionResults.map((q: any) =>
+                  String(q?.question ?? ''),
+                ),
                 evaluation: arguments_.evaluation ?? interview?.evaluation,
               });
-            this.logger.log(
-              `✅ Groq analysis completed: ${JSON.stringify(groqAnalysis, null, 2)}`,
-            );
           } catch (groqError: any) {
             this.logger.error(
               `⚠️ Groq analysis failed: ${groqError?.message || groqError}`,
             );
           }
-        } else {
-          this.logger.warn(`⚠️ No transcript available for Groq analysis`);
         }
 
-        // Extract rating and summary from Groq analysis if available
         const groqRating =
           typeof groqAnalysis?.overall_rating === 'number'
             ? groqAnalysis.overall_rating
@@ -220,13 +389,6 @@ export class VapiService {
           typeof groqAnalysis?.summary === 'string'
             ? groqAnalysis.summary
             : undefined;
-
-        const finalRating = overallRating ?? groqRating;
-        const finalSummary = interviewSummary ?? groqSummary;
-
-        this.logger.log(
-          `📊 Scores: overall=${overallScore}, rating=${finalRating}, resume=${resumeScore}`,
-        );
 
         const savePayload: any = {
           inviteToken: inviteToken || undefined,
@@ -243,9 +405,9 @@ export class VapiService {
             ).trim() || undefined,
           question_results: questionResults,
           overall_score: overallScore,
-          overall_rating: finalRating,
+          overall_rating: overallRating ?? groqRating,
           resume_score: resumeScore,
-          interview_summary: finalSummary,
+          interview_summary: interviewSummary ?? groqSummary,
           transcript: transcriptText || undefined,
           analysis: groqAnalysis,
           evaluation: arguments_.evaluation ?? interview?.evaluation,
@@ -254,26 +416,15 @@ export class VapiService {
           ).trim(),
         };
 
-        // Only add createdBy if we have it from interview object
         if (interview?.createdBy) {
           savePayload.createdBy = interview.createdBy;
-          this.logger.log(
-            `📌 Added createdBy from interview: ${interview.createdBy}`,
-          );
         }
-
-        this.logger.log(
-          `💾 Saving with payload: ${JSON.stringify(savePayload, null, 2)}`,
-        );
 
         const saved =
           await this.interviewResultService.markCompleted(savePayload);
 
         this.logger.log(
-          `✅ Interview results saved successfully for: ${saved?.applicant_name ?? candidateName}`,
-        );
-        this.logger.debug(
-          `Saved document ID: ${(saved as any)?._id ?? (saved as any)?.id}`,
+          `✅ Interview results saved for: ${saved?.applicant_name ?? candidateName}`,
         );
 
         return {
@@ -282,10 +433,9 @@ export class VapiService {
         };
       } catch (error: any) {
         this.logger.error(
-          `❌ Error handling save_interview_results tool call: ${error.message}`,
+          `❌ Error handling save_interview_results: ${error.message}`,
           error.stack,
         );
-        // Still return success so the call continues
         return {
           toolCallId,
           result: { ok: true, message: 'Tool call processed' },
@@ -293,7 +443,6 @@ export class VapiService {
       }
     }
 
-    // For any other tool calls, respond with ok
     this.logger.warn(`⚠️ Unknown tool called: ${functionName}`);
     return {
       toolCallId,

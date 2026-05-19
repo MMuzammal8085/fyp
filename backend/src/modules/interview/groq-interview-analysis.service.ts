@@ -1,6 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import {
+  cleanInterviewTranscript,
+  safeParseLlmJson,
+  truncateForPrompt,
+} from 'src/shared/utils/json.utils';
 
 export type GroqInterviewAnalysisInput = {
   transcript: string;
@@ -39,30 +44,26 @@ export class GroqInterviewAnalysisService {
     });
   }
 
-  private safeParseJson(text: string): any {
-    const trimmed = String(text ?? '').trim();
-    if (!trimmed) return undefined;
-
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      // Attempt to salvage a JSON object from surrounding text.
-      const start = trimmed.indexOf('{');
-      const end = trimmed.lastIndexOf('}');
-      if (start >= 0 && end > start) {
-        const slice = trimmed.slice(start, end + 1);
-        try {
-          return JSON.parse(slice);
-        } catch {
-          return undefined;
-        }
-      }
-      return undefined;
-    }
+  private buildAnalysisPayload(
+    input: GroqInterviewAnalysisInput,
+    transcript: string,
+    extra?: Record<string, unknown>,
+  ) {
+    return {
+      jobTitle: truncateForPrompt(input.jobTitle ?? '', 500),
+      jobDescription: truncateForPrompt(input.jobDescription ?? '', 4_000),
+      compulsoryQuestions: Array.isArray(input.compulsoryQuestions)
+        ? input.compulsoryQuestions.slice(0, 20).map(String)
+        : [],
+      resumeData: input.resumeData ?? undefined,
+      evaluation: input.evaluation ?? undefined,
+      transcript: truncateForPrompt(transcript, 22_000),
+      ...extra,
+    };
   }
 
   async analyzeTranscript(input: GroqInterviewAnalysisInput): Promise<any> {
-    const transcript = String(input.transcript ?? '').trim();
+    const transcript = cleanInterviewTranscript(String(input.transcript ?? ''));
     if (!transcript) {
       this.logger.warn('📝 Empty transcript provided, skipping analysis');
       return undefined;
@@ -79,20 +80,6 @@ export class GroqInterviewAnalysisService {
 
     this.logger.log(`🔄 Starting Groq analysis for ${this.preferredModel}`);
     this.logger.log(`📝 Transcript length: ${transcript.length} chars`);
-    this.logger.log(
-      `📋 Job title: ${input.jobTitle}, Job description length: ${String(input.jobDescription ?? '').length}`,
-    );
-
-    const prompt = {
-      jobTitle: input.jobTitle ?? '',
-      jobDescription: input.jobDescription ?? '',
-      compulsoryQuestions: Array.isArray(input.compulsoryQuestions)
-        ? input.compulsoryQuestions
-        : [],
-      resumeData: input.resumeData ?? undefined,
-      evaluation: input.evaluation ?? undefined,
-      transcript,
-    };
 
     const analyzeOnce = async (payload: any) => {
       const response = await this.groq!.chat.completions.create({
@@ -102,14 +89,18 @@ export class GroqInterviewAnalysisService {
           {
             role: 'system',
             content:
-              'You are an interview evaluator. Produce ONLY valid JSON (no markdown). Do not include the transcript. ' +
-              'Return an object with: overall_rating (0-10), recommendation (hire|maybe|no_hire), summary, strengths[], weaknesses[], risks[], ' +
-              'dimension_scores {technical,communication,problem_solving,experience_fit} each 0-10, and evidence {quotes[]} with short verbatim snippets (<=120 chars each).',
+              'You are an interview evaluator. Respond with ONLY valid JSON — no markdown fences, no text outside the JSON object. ' +
+              'Do not repeat the transcript. Required fields: ' +
+              'overall_rating (0-10 number), recommendation (hire|maybe|no_hire), summary (string), ' +
+              'sentiment (positive|neutral|negative), sentiment_score (-1 to 1 number), ' +
+              'strengths (string array), weaknesses (string array), risks (string array), ' +
+              'dimension_scores {technical,communication,problem_solving,experience_fit} each 0-10, ' +
+              'evidence {quotes: string array} with short verbatim snippets (max 120 chars each).',
           },
           {
             role: 'user',
             content:
-              'Analyze this interview given the context payload below. Output JSON only.\n\n' +
+              'Analyze this interview from the context payload below. Return JSON only.\n\n' +
               JSON.stringify(payload),
           },
         ],
@@ -117,14 +108,14 @@ export class GroqInterviewAnalysisService {
       });
 
       const content = response.choices?.[0]?.message?.content ?? '';
-      const parsed = this.safeParseJson(content);
+      const parsed = safeParseLlmJson(content);
       return { content, parsed };
     };
 
     try {
-      // If transcript is very long, analyze in chunks then combine.
-      const maxChunkChars = 22_000;
-      const overlapChars = 500;
+      const maxChunkChars = 18_000;
+      const overlapChars = 400;
+      const prompt = this.buildAnalysisPayload(input, transcript);
 
       if (transcript.length <= maxChunkChars) {
         const { content, parsed } = await analyzeOnce(prompt);
@@ -145,22 +136,16 @@ export class GroqInterviewAnalysisService {
       }
 
       const chunks: string[] = [];
-      for (let start = 0; start < transcript.length; ) {
-        const end = Math.min(transcript.length, start + maxChunkChars);
-        const chunk = transcript.slice(start, end);
-        chunks.push(chunk);
-        if (end >= transcript.length) break;
-        start = Math.max(0, end - overlapChars);
+      for (let start = 0; start < transcript.length; start += maxChunkChars - overlapChars) {
+        chunks.push(transcript.slice(start, start + maxChunkChars));
       }
 
       const chunkAnalyses: any[] = [];
       for (let i = 0; i < chunks.length; i += 1) {
-        const chunkPrompt = {
-          ...prompt,
+        const chunkPrompt = this.buildAnalysisPayload(input, chunks[i], {
           transcriptChunkIndex: i + 1,
           transcriptChunksTotal: chunks.length,
-          transcript: chunks[i],
-        };
+        });
         const { content, parsed } = await analyzeOnce(chunkPrompt);
         chunkAnalyses.push(
           parsed && typeof parsed === 'object'
@@ -170,14 +155,12 @@ export class GroqInterviewAnalysisService {
       }
 
       const combinePayload = {
-        jobTitle: input.jobTitle ?? '',
-        jobDescription: input.jobDescription ?? '',
-        compulsoryQuestions: Array.isArray(input.compulsoryQuestions)
-          ? input.compulsoryQuestions
-          : [],
-        resumeData: input.resumeData ?? undefined,
-        evaluation: input.evaluation ?? undefined,
-        note: 'The transcript was analyzed in multiple chunks. Combine the chunk analyses into a single final evaluation. Do not include the transcript.',
+        jobTitle: prompt.jobTitle,
+        jobDescription: prompt.jobDescription,
+        compulsoryQuestions: prompt.compulsoryQuestions,
+        resumeData: prompt.resumeData,
+        evaluation: prompt.evaluation,
+        note: 'The transcript was analyzed in multiple chunks. Combine chunk analyses into one final evaluation. Do not include the transcript.',
         chunkAnalyses,
       };
 

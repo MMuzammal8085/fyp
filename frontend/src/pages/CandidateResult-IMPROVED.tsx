@@ -17,6 +17,7 @@ import {
 import axiosInstance from "../api/axiosInstance";
 import AppShell from "../components/AppShell";
 import { formatDate } from "../utils/interview";
+import { getResumeDownloadUrl } from "../utils/resumeDownload";
 
 type CandidateResultResponse = {
   applicant_name?: string;
@@ -235,7 +236,8 @@ export default function CandidateResult() {
             {/* Download Resume Button */}
             {data?.resumeUrl ? (
               <a
-                href={data.resumeUrl}
+                href={getResumeDownloadUrl(data.resumeUrl)}
+                download={`${data.applicant_name ?? "candidate"}-resume.pdf`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition border bg-blue-600 text-white border-blue-600 hover:bg-blue-700"

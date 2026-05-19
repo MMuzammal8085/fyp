@@ -30,6 +30,7 @@ type PrepareResponse = {
   signedUrl?: string;
   agentId?: string;
   assistantId?: string;
+  vapiPublicKey?: string;
   overall_score?: number;
   conversationError?: string;
   parserWarning?: string;

@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import {
+  safeParseLlmJson,
+  truncateForPrompt,
+} from 'src/shared/utils/json.utils';
 
 export type GroqResumeAnalysisInput = {
   resumeText: string;
@@ -9,12 +13,15 @@ export type GroqResumeAnalysisInput = {
 };
 
 export type GroqResumeAnalysisResult = {
-  resume_score?: number; // 0-100
+  score?: number;
+  match_reasons?: string[];
+  gaps?: string[];
+  resume_score?: number;
   summary?: string;
   strengths?: string[];
   weaknesses?: string[];
-  skills_match?: number; // 0-100
-  experience_fit?: number; // 0-100
+  skills_match?: number;
+  experience_fit?: number;
   model?: string;
   generatedAt?: string;
   error?: string;
@@ -54,32 +61,14 @@ export class GroqResumeAnalysisService {
     );
   }
 
-  private safeParseJson(text: string): any {
-    const trimmed = String(text ?? '').trim();
-    if (!trimmed) return undefined;
-
-    try {
-      return JSON.parse(trimmed);
-    } catch {
-      // Attempt to salvage JSON from surrounding text
-      const start = trimmed.indexOf('{');
-      const end = trimmed.lastIndexOf('}');
-      if (start >= 0 && end > start) {
-        const slice = trimmed.slice(start, end + 1);
-        try {
-          return JSON.parse(slice);
-        } catch {
-          return undefined;
-        }
-      }
-      return undefined;
-    }
-  }
-
   async analyzeResume(
     input: GroqResumeAnalysisInput,
   ): Promise<GroqResumeAnalysisResult> {
-    const resumeText = String(input.resumeText ?? '').trim();
+    const resumeText = truncateForPrompt(String(input.resumeText ?? '').trim(), 12_000);
+    const jobDescription = truncateForPrompt(
+      String(input.jobDescription ?? '').trim(),
+      4_000,
+    );
 
     if (!resumeText) {
       this.logger.warn('📝 Empty resume text provided, skipping analysis');
@@ -91,8 +80,7 @@ export class GroqResumeAnalysisService {
 
     if (!this.groq) {
       this.logger.error(
-        '❌ Groq client not initialized. GROQ_API_KEY is missing. ' +
-          'Resume will not be analyzed. Scores will show as "-" in frontend.',
+        '❌ Groq client not initialized. GROQ_API_KEY is missing.',
       );
       return {
         error: 'Groq API not configured - GROQ_API_KEY missing',
@@ -105,12 +93,12 @@ export class GroqResumeAnalysisService {
     );
     this.logger.log(`📝 Resume text length: ${resumeText.length} chars`);
     this.logger.log(
-      `📋 Job title: ${input.jobTitle}, Job description length: ${String(input.jobDescription ?? '').length}`,
+      `📋 Job title: ${input.jobTitle}, Job description length: ${jobDescription.length}`,
     );
 
     const prompt = {
       jobTitle: input.jobTitle ?? 'Position',
-      jobDescription: input.jobDescription ?? '',
+      jobDescription,
       resumeText,
     };
 
@@ -122,15 +110,16 @@ export class GroqResumeAnalysisService {
           {
             role: 'system',
             content:
-              'You are a resume evaluator. Analyze the resume against the job description. ' +
-              'Produce ONLY valid JSON (no markdown, no explanations). ' +
-              'Return an object with: resume_score (0-100), summary (brief evaluation), strengths[] (list of strengths), ' +
-              'weaknesses[] (areas of improvement), skills_match (0-100 how well skills match), experience_fit (0-100 how well experience matches).',
+              'You are a resume evaluator. Compare the resume against the job description. ' +
+              'Respond with ONLY valid JSON — no markdown fences, no prose outside the JSON object. ' +
+              'Required fields: score (0-100 integer), match_reasons (string array of why the candidate fits), ' +
+              'gaps (string array of missing skills/experience), summary (brief string), ' +
+              'skills_match (0-100), experience_fit (0-100).',
           },
           {
             role: 'user',
             content:
-              'Analyze this resume and job fit. Output JSON only.\n\n' +
+              'Analyze resume vs job fit. Return JSON only.\n\n' +
               JSON.stringify(prompt),
           },
         ],
@@ -140,23 +129,35 @@ export class GroqResumeAnalysisService {
       const content = response.choices?.[0]?.message?.content ?? '';
       this.logger.log(`📝 Groq response: ${content.slice(0, 500)}`);
 
-      const parsed = this.safeParseJson(content);
+      const parsed = safeParseLlmJson(content);
 
       if (!parsed || typeof parsed !== 'object') {
-        this.logger.error(
-          '❌ Groq returned invalid JSON for resume analysis. ' +
-            'Response was not parseable. Scores will show as "-".',
-        );
+        this.logger.error('❌ Groq returned invalid JSON for resume analysis.');
         return {
           error: 'Invalid response format from Groq',
           generatedAt: new Date().toISOString(),
         };
       }
 
-      // Ensure numeric scores are within 0-100
-      const resumeScore = parsed.resume_score
-        ? Math.min(100, Math.max(0, Number(parsed.resume_score)))
-        : undefined;
+      const rawScore =
+        parsed.score ?? parsed.resume_score ?? parsed.overall_score;
+      const score =
+        typeof rawScore === 'number' && Number.isFinite(rawScore)
+          ? Math.min(100, Math.max(0, Number(rawScore)))
+          : undefined;
+
+      const matchReasons = Array.isArray(parsed.match_reasons)
+        ? parsed.match_reasons.map(String).slice(0, 10)
+        : Array.isArray(parsed.strengths)
+          ? parsed.strengths.map(String).slice(0, 10)
+          : [];
+
+      const gaps = Array.isArray(parsed.gaps)
+        ? parsed.gaps.map(String).slice(0, 10)
+        : Array.isArray(parsed.weaknesses)
+          ? parsed.weaknesses.map(String).slice(0, 10)
+          : [];
+
       const skillsMatch = parsed.skills_match
         ? Math.min(100, Math.max(0, Number(parsed.skills_match)))
         : undefined;
@@ -165,14 +166,13 @@ export class GroqResumeAnalysisService {
         : undefined;
 
       return {
-        resume_score: resumeScore,
+        score,
+        match_reasons: matchReasons,
+        gaps,
+        resume_score: score,
         summary: String(parsed.summary ?? '').slice(0, 1000),
-        strengths: Array.isArray(parsed.strengths)
-          ? parsed.strengths.slice(0, 10).map((s: any) => String(s))
-          : undefined,
-        weaknesses: Array.isArray(parsed.weaknesses)
-          ? parsed.weaknesses.slice(0, 10).map((w: any) => String(w))
-          : undefined,
+        strengths: matchReasons,
+        weaknesses: gaps,
         skills_match: skillsMatch,
         experience_fit: experienceFit,
         model: this.preferredModel,
