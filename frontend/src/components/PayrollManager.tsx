@@ -154,7 +154,7 @@ export default function PayrollManager() {
 
   if (!canManage) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="app-panel p-5 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Payroll</h2>
         <p className="mt-2 text-sm text-slate-600">
           Payroll records are managed by HR.
@@ -165,7 +165,7 @@ export default function PayrollManager() {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="app-panel p-5 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-slate-900">
@@ -283,7 +283,7 @@ export default function PayrollManager() {
         </form>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="app-panel p-5 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">
             Payroll Records

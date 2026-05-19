@@ -19,6 +19,9 @@ export class Otp {
     @Column()
     code: string;
 
+    @Column({ default: 'email_verification' })
+    purpose: 'email_verification' | 'password_reset';
+
     @Column()
     expiresAt: Date;
 

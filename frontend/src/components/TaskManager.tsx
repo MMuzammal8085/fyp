@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, Plus } from "lucide-react";
 import axiosInstance from "../api/axiosInstance";
-import { getUserRole } from "../utils/auth";
+import { isHr } from "../utils/auth";
 import { formatDate } from "../utils/interview";
 
 type Task = {
@@ -32,8 +32,7 @@ const taskStatuses = [
 ];
 
 export default function TaskManager() {
-  const role = getUserRole();
-  const isHr = role === 1;
+  const isHrUser = isHr();
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -57,13 +56,13 @@ export default function TaskManager() {
     try {
       const [taskRes, employeeRes] = await Promise.all([
         axiosInstance.get<Task[]>("/tasks"),
-        isHr
+        isHrUser
           ? axiosInstance.get<Employee[]>("/employees")
           : Promise.resolve({ data: [] }),
       ]);
       setTasks(Array.isArray(taskRes.data) ? taskRes.data : []);
       setEmployees(Array.isArray(employeeRes.data) ? employeeRes.data : []);
-      if (isHr && !assignedTo && employeeRes.data?.[0]?._id) {
+      if (isHrUser && !assignedTo && employeeRes.data?.[0]?._id) {
         setAssignedTo(String(employeeRes.data[0]._id));
       }
     } catch (err: any) {
@@ -122,8 +121,8 @@ export default function TaskManager() {
 
   return (
     <div className="space-y-5">
-      {isHr ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      {isHrUser ? (
+        <div className="app-panel p-5 shadow-sm">
           <h2 className="text-lg font-semibold text-slate-900">Create Task</h2>
           <p className="mt-1 text-sm text-slate-500">
             HR can assign tasks to employees and track progress.
@@ -200,7 +199,7 @@ export default function TaskManager() {
         </div>
       ) : null}
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="app-panel p-5 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">Task List</h3>
           <button
@@ -245,7 +244,7 @@ export default function TaskManager() {
                     <p className="text-xs uppercase text-slate-500 mb-2">
                       Status
                     </p>
-                    {isHr ? (
+                    {isHrUser ? (
                       <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700 capitalize">
                         {task.status}
                       </span>

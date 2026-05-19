@@ -55,6 +55,20 @@ export class MailService {
     });
   }
 
+  async sendPasswordReset(email: string, resetLink: string) {
+    await this.safeSend({
+      from: `"Intelli-Hire" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: 'Reset your password',
+      html: `
+        <h2>Password reset</h2>
+        <p>Click the link below to set a new password. This link expires in 1 hour.</p>
+        <p><a href="${resetLink}">${resetLink}</a></p>
+        <p>If you did not request this, you can ignore this email.</p>
+      `,
+    });
+  }
+
   async sendInterviewInvite(email: string, inviteLink: string) {
     await this.safeSend({
       from: `"Intelli-Hire" <${process.env.EMAIL_USER}>`,

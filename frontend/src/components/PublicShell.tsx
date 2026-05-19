@@ -1,23 +1,31 @@
-import { Users } from "lucide-react";
+import { useState } from "react";
+import { Menu, Users, X } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
+import BrandLogo from "./BrandLogo";
+import Footer from "./landing/Footer";
+import ThemeToggle from "./ThemeToggle";
 
 type PublicShellProps = {
   children: React.ReactNode;
   headerSlot?: React.ReactNode;
+  showFooter?: boolean;
 };
 
 const navLinks = [
-  { path: "/about-us", label: "About Us" },
+  { path: "/about-us", label: "About" },
   { path: "/features", label: "Features" },
-  { path: "/project", label: "Project" },
-  { path: "/contact-us", label: "Contact Us" },
+  { path: "/pricing", label: "Pricing" },
+  { path: "/careers", label: "Careers" },
+  { path: "/contact-us", label: "Contact" },
 ];
 
 export default function PublicShell({
   children,
   headerSlot,
+  showFooter = true,
 }: PublicShellProps) {
   const location = useLocation();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const hasToken = Boolean(localStorage.getItem("token"));
   const storedUsername = localStorage.getItem("username");
   const storedEmail = localStorage.getItem("userEmail");
@@ -25,18 +33,29 @@ export default function PublicShell({
     storedUsername || (storedEmail ? storedEmail.split("@")[0] : "User");
 
   return (
-    <div className="home-wrap">
+    <div className="home-wrap public-layout">
       <header className="landing-header">
-        <nav className="top-nav">
-          <Link to="/" className="brand-link" title="Go to Home">
-            IntelliHire
-          </Link>
+        <nav className="top-nav top-nav-enhanced">
+          <div className="top-nav-brand-row">
+            <button
+              type="button"
+              className="public-nav-toggle lg:hidden"
+              onClick={() => setMobileNavOpen((o) => !o)}
+              aria-label={mobileNavOpen ? "Close menu" : "Open menu"}
+            >
+              {mobileNavOpen ? <X size={22} /> : <Menu size={22} />}
+            </button>
+            <BrandLogo size="nav" />
+          </div>
 
-          <div className="top-nav-links">
+          <div
+            className={`top-nav-links ${mobileNavOpen ? "top-nav-links-open" : ""}`}
+          >
             {navLinks.map((item) => (
               <Link
                 key={item.path}
                 to={item.path}
+                onClick={() => setMobileNavOpen(false)}
                 className={
                   location.pathname === item.path
                     ? "nav-item active"
@@ -49,6 +68,7 @@ export default function PublicShell({
           </div>
 
           <div className="nav-actions">
+            <ThemeToggle />
             {!hasToken ? (
               <>
                 <Link to="/signin" className="nav-btn nav-btn-ghost">
@@ -60,7 +80,7 @@ export default function PublicShell({
               </>
             ) : (
               <>
-                <p className="user-chip">
+                <p className="user-chip hidden sm:inline-flex">
                   <Users size={15} />
                   <span>{username}</span>
                 </p>
@@ -75,19 +95,9 @@ export default function PublicShell({
         {headerSlot}
       </header>
 
-      {children}
+      <div className="public-main">{children}</div>
 
-      <footer className="home-footer">
-        <div>
-          <p className="footer-brand">IntelliHire</p>
-          <p>AI-powered hiring & HR workflows.</p>
-        </div>
-        <div className="footer-links">
-          <Link to="/features">Features</Link>
-          <Link to="/project">Project</Link>
-          <Link to="/contact-us">Contact</Link>
-        </div>
-      </footer>
+      {showFooter && <Footer />}
     </div>
   );
 }

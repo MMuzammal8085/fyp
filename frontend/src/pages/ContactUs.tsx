@@ -50,12 +50,16 @@ export default function ContactUs() {
           <article className="hover-lift">
             <Mail size={20} />
             <h3>Email</h3>
-            <p>hr-platform@intellihire.ai</p>
+            <p>
+              <a href="mailto:webdevmuz@gmail.com">webdevmuz@gmail.com</a>
+            </p>
           </article>
           <article className="hover-lift">
             <Phone size={20} />
             <h3>Call</h3>
-            <p>+92 300 000 0000</p>
+            <p>
+              <a href="tel:+923217762937">+92 321 7762937</a>
+            </p>
           </article>
           <article className="hover-lift">
             <BriefcaseBusiness size={20} />

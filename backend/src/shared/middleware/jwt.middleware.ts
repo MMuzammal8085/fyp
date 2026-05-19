@@ -27,6 +27,8 @@ export class JWTMiddleware implements NestMiddleware {
       /(^|\/)+auth\/login$/,
       /(^|\/)+user\/signup$/,
       /(^|\/)+user\/verify-otp$/,
+      /(^|\/)+user\/forgot-password$/,
+      /(^|\/)+user\/reset-password$/,
       /(^|\/)+public\/interview-invites(\/.*)?$/,
       /(^|\/)+vapi(\/.*)?$/,
     ];

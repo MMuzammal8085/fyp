@@ -8,7 +8,6 @@ import {
   Download,
   CheckCircle,
   AlertCircle,
-  TrendingUp,
   BarChart3,
   MessageSquare,
   FileText,
@@ -17,7 +16,7 @@ import {
 import axiosInstance from "../api/axiosInstance";
 import AppShell from "../components/AppShell";
 import { formatDate } from "../utils/interview";
-import { getResumeDownloadUrl } from "../utils/resumeDownload";
+import { downloadResume, getResumeViewUrl } from "../utils/resumeDownload";
 
 type CandidateResultResponse = {
   applicant_name?: string;
@@ -235,17 +234,31 @@ export default function CandidateResult() {
 
             {/* Download Resume Button */}
             {data?.resumeUrl ? (
-              <a
-                href={getResumeDownloadUrl(data.resumeUrl)}
-                download={`${data.applicant_name ?? "candidate"}-resume.pdf`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition border bg-blue-600 text-white border-blue-600 hover:bg-blue-700"
-                title="Download resume"
-              >
-                <Download size={16} />
-                Resume
-              </a>
+              <>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void downloadResume(
+                      data.resumeUrl!,
+                      `${data.applicant_name ?? "candidate"}-resume`,
+                    )
+                  }
+                  className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition border bg-blue-600 text-white border-blue-600 hover:bg-blue-700"
+                  title="Download resume"
+                >
+                  <Download size={16} />
+                  Download
+                </button>
+                <a
+                  href={getResumeViewUrl(data.resumeUrl)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition border border-[var(--border)] text-[var(--text)] hover:bg-[var(--surface-hover)]"
+                  title="View resume"
+                >
+                  View
+                </a>
+              </>
             ) : null}
           </div>
         </div>
@@ -293,8 +306,7 @@ export default function CandidateResult() {
                   <FileText size={18} className="text-cyan-600" />
                 </div>
                 <p className="text-3xl font-bold bg-linear-to-r from-cyan-700 to-teal-700 bg-clip-text text-transparent mt-2">
-                  {typeof data.resume_score === "number" &&
-                  typeof data.analysis?.resume_score === "number"
+                  {typeof data.resume_score === "number"
                     ? data.resume_score.toFixed(1)
                     : "-"}
                 </p>
@@ -315,8 +327,7 @@ export default function CandidateResult() {
                   <Star size={18} className="text-cyan-600" />
                 </div>
                 <p className="text-3xl font-bold bg-linear-to-r from-cyan-700 to-teal-700 bg-clip-text text-transparent mt-2">
-                  {typeof data.overall_rating === "number" &&
-                  typeof data.analysis?.overall_rating === "number"
+                  {typeof data.overall_rating === "number"
                     ? data.overall_rating.toFixed(1)
                     : "-"}
                 </p>
@@ -336,8 +347,7 @@ export default function CandidateResult() {
                   <BarChart3 size={18} className="text-cyan-600" />
                 </div>
                 <p className="text-3xl font-bold bg-linear-to-r from-cyan-700 to-teal-700 bg-clip-text text-transparent mt-2">
-                  {typeof data.overall_score === "number" &&
-                  typeof data.analysis?.resume_score === "number"
+                  {typeof data.overall_score === "number"
                     ? data.overall_score.toFixed(1)
                     : "-"}
                 </p>
@@ -516,7 +526,7 @@ export default function CandidateResult() {
                 </div>
 
                 <div className="space-y-4">
-                  {data.question_results.map((q: any, idx: number) => (
+                  {(data.question_results ?? []).map((q: any, idx: number) => (
                     <div
                       key={idx}
                       className="p-4 border border-slate-200 rounded-lg hover:border-blue-300 transition"

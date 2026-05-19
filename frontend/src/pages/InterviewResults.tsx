@@ -12,7 +12,7 @@ import {
 import axiosInstance from "../api/axiosInstance";
 import AppShell from "../components/AppShell";
 import InterviewInvitePanel from "../components/InterviewInvitePanel";
-import { extractId, formatDate } from "../utils/interview";
+import { formatDate } from "../utils/interview";
 
 type InterviewItem = {
   _id?: any;

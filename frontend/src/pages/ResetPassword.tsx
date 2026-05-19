@@ -1,15 +1,18 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import axiosInstance from "../api/axiosInstance";
 import AuthLayout from "../components/AuthLayout";
-import { persistAuthFromToken } from "../utils/auth";
 
-export default function SignIn() {
+export default function ResetPassword() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
-  const [email, setEmail] = useState("");
+  const token = useMemo(() => searchParams.get("token") ?? "", [searchParams]);
+  const email = useMemo(() => searchParams.get("email") ?? "", [searchParams]);
+
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -19,26 +22,37 @@ export default function SignIn() {
     e.preventDefault();
     setError("");
     setSuccess("");
+
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+
+    if (password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    if (!token || !email) {
+      setError("Invalid or missing reset link. Request a new one.");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const res = await axiosInstance.post("/auth/login", {
+      const res = await axiosInstance.post("/user/reset-password", {
         email,
+        token,
         password,
       });
-
-      const token = res.data?.access_token;
-      if (!token || typeof token !== "string") {
-        throw new Error("Missing access token");
-      }
-
-      persistAuthFromToken(token, email);
-      setSuccess("Signed in successfully");
-
-      navigate("/dashboard", { replace: true });
+      setSuccess(res.data?.message || "Password updated successfully");
+      setTimeout(() => navigate("/signin", { replace: true }), 1500);
     } catch (err: any) {
       setError(
-        err?.response?.data?.message || err?.message || "Sign in failed",
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to reset password",
       );
     } finally {
       setLoading(false);
@@ -47,18 +61,17 @@ export default function SignIn() {
 
   return (
     <AuthLayout
-      title="Sign In"
-      subtitle="Login to your account"
-      heroTitle="Welcome back. Run hiring with confidence."
-      heroBody="Track people, interviews, attendance, and payroll from one organized dashboard."
+      title="Reset password"
+      subtitle="Choose a strong password with at least 8 characters"
+      heroTitle="Set a new password"
+      heroBody="Your reset token is single-use and time-limited for your security."
       footer={
         <p className="mt-auto pt-10 text-sm text-cyan-50/85">
-          New here?
           <Link
-            to="/signup"
-            className="ml-2 inline-flex items-center gap-1 font-semibold text-white underline decoration-cyan-200/70 underline-offset-4"
+            to="/forgot-password"
+            className="font-semibold text-white underline decoration-cyan-200/70 underline-offset-4"
           >
-            Create an account
+            Request a new link
           </Link>
         </p>
       }
@@ -69,34 +82,13 @@ export default function SignIn() {
       <form onSubmit={onSubmit} className="space-y-4">
         <div>
           <label className="mb-2 block text-sm font-medium text-[var(--text)]">
-            Email Address
+            New password
           </label>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="name@company.com"
-            className="input-field"
-          />
-        </div>
-
-        <div>
-          <div className="mb-2 flex items-center justify-between">
-            <label className="text-sm font-medium text-[var(--text)]">
-              Password
-            </label>
-            <Link
-              to="/forgot-password"
-              className="text-sm font-medium text-cyan-700 hover:underline dark:text-cyan-400"
-            >
-              Forgot password?
-            </Link>
-          </div>
           <div className="relative">
             <input
               type={showPassword ? "text" : "password"}
               required
+              minLength={8}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
@@ -113,24 +105,29 @@ export default function SignIn() {
           </div>
         </div>
 
+        <div>
+          <label className="mb-2 block text-sm font-medium text-[var(--text)]">
+            Confirm password
+          </label>
+          <input
+            type={showPassword ? "text" : "password"}
+            required
+            minLength={8}
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            placeholder="••••••••"
+            className="input-field"
+          />
+        </div>
+
         <button type="submit" disabled={loading} className="btn-primary">
           {loading ? (
             <Loader2 className="animate-spin" size={18} />
           ) : (
-            "Sign In"
+            "Update password"
           )}
         </button>
       </form>
-
-      <p className="mt-4 text-center text-sm text-[var(--text-muted)]">
-        Don&apos;t have an account?
-        <Link
-          to="/signup"
-          className="ml-1 font-medium text-cyan-700 hover:underline dark:text-cyan-400"
-        >
-          Sign Up
-        </Link>
-      </p>
     </AuthLayout>
   );
 }

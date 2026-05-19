@@ -49,7 +49,13 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(JWTMiddleware)
-      .exclude('auth/login', 'user/signup', 'user/verify-otp')
+      .exclude(
+        'auth/login',
+        'user/signup',
+        'user/verify-otp',
+        'user/forgot-password',
+        'user/reset-password',
+      )
       .forRoutes('*');
   }
 }

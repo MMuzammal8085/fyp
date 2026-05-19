@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 import axiosInstance from "../api/axiosInstance";
-import { getUserRole } from "../utils/auth";
+import { isHr } from "../utils/auth";
 
 type Employee = {
   _id?: any;
@@ -12,8 +12,7 @@ type Employee = {
 };
 
 export default function EmployeeManager() {
-  const role = getUserRole();
-  const canManage = role === 1;
+  const canManage = isHr();
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(false);
@@ -77,7 +76,7 @@ export default function EmployeeManager() {
 
   if (!canManage) {
     return (
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="app-panel p-5 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Employees</h2>
         <p className="mt-2 text-sm text-slate-600">
           You can view employee related workflow here, but only HR can add or
@@ -89,7 +88,7 @@ export default function EmployeeManager() {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="app-panel p-5 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Add Employee</h2>
         <p className="mt-1 text-sm text-slate-500">
           Create an employee account with the employee role.
@@ -143,7 +142,7 @@ export default function EmployeeManager() {
         </form>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="app-panel p-5 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-lg font-semibold text-slate-900">
             Employee List

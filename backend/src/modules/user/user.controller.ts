@@ -8,10 +8,15 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 
 import { Otp } from 'src/database/entities/otp.entity';
 import { UserService } from './user.service';
-import { CreateUserDto } from './user.dto';
+import {
+  CreateUserDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+} from './user.dto';
 import { MailService } from 'src/shared/service/mail.service';
 
 @Controller('user')
@@ -64,6 +69,7 @@ export class UserController {
     const otp = this.otpRepo.create({
       email: normalizedEmail,
       code,
+      purpose: 'email_verification',
       expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 min
     });
 
@@ -87,7 +93,7 @@ export class UserController {
     }
 
     const [otp] = await this.otpRepo.find({
-      where: { code },
+      where: { code, purpose: 'email_verification' },
       order: { createdAt: 'DESC' },
       take: 1,
     });
@@ -111,5 +117,104 @@ export class UserController {
     return {
       message: 'Account verified successfully',
     };
+  }
+
+  // 🔹 FORGOT PASSWORD
+  @Post('forgot-password')
+  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+    const normalizedEmail = dto.email.toLowerCase().trim();
+    const genericMessage =
+      'If an account exists for this email, a reset link has been sent.';
+
+    const user = await this.userService.findOne({
+      where: { email: normalizedEmail },
+    });
+
+    if (!user) {
+      return { message: genericMessage };
+    }
+
+    const token = randomBytes(32).toString('hex');
+
+    await this.otpRepo.delete({
+      email: normalizedEmail,
+      purpose: 'password_reset',
+    } as any);
+
+    const resetOtp = this.otpRepo.create({
+      email: normalizedEmail,
+      code: token,
+      purpose: 'password_reset',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    await this.otpRepo.save(resetOtp);
+
+    const frontendBase = (
+      process.env.FRONTEND_URL ?? 'http://localhost:5173'
+    ).replace(/\/+$/, '');
+    const resetLink = `${frontendBase}/reset-password?token=${encodeURIComponent(token)}&email=${encodeURIComponent(normalizedEmail)}`;
+
+    await this.mailService.sendPasswordReset(normalizedEmail, resetLink);
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[UserController] Password reset token generated for ${normalizedEmail}`,
+    );
+
+    return {
+      message: genericMessage,
+      ...(process.env.NODE_ENV !== 'production'
+        ? { resetLink, token }
+        : {}),
+    };
+  }
+
+  // 🔹 RESET PASSWORD
+  @Post('reset-password')
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    const normalizedEmail = dto.email.toLowerCase().trim();
+    const token = dto.token?.trim();
+
+    if (!token) {
+      throw new BadRequestException('Reset token is required');
+    }
+
+    const [resetRecord] = await this.otpRepo.find({
+      where: {
+        email: normalizedEmail,
+        code: token,
+        purpose: 'password_reset',
+      },
+      order: { createdAt: 'DESC' },
+      take: 1,
+    });
+
+    if (!resetRecord) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    if (resetRecord.expiresAt < new Date()) {
+      await this.otpRepo.delete({ _id: resetRecord._id });
+      throw new BadRequestException('Reset token has expired');
+    }
+
+    const user = await this.userService.findOne({
+      where: { email: normalizedEmail },
+    });
+
+    if (!user) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    const hashedPassword = await bcrypt.hash(dto.password, 12);
+    await this.userService.update(
+      { email: normalizedEmail },
+      { password: hashedPassword },
+    );
+
+    await this.otpRepo.delete({ _id: resetRecord._id });
+
+    return { message: 'Password updated successfully' };
   }
 }

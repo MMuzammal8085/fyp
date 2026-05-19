@@ -19,9 +19,9 @@ export default function StatCard({
         : "text-slate-600";
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-cyan-50/40 to-teal-50/40 p-5 shadow-sm hover:shadow-md hover:border-cyan-300/50 transition-all duration-300">
+    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-sm hover:shadow-md hover:border-cyan-300/50 transition-all duration-300">
       <div className="flex items-start justify-between mb-3">
-        <p className="text-sm font-medium text-slate-600">{label}</p>
+        <p className="text-sm font-medium text-[var(--text-muted)]">{label}</p>
         {icon && <div className="text-cyan-700 opacity-80">{icon}</div>}
       </div>
       <p className="text-3xl font-bold bg-linear-to-r from-cyan-700 to-teal-700 bg-clip-text text-transparent">
