@@ -8,10 +8,12 @@ import {
   BadRequestException,
   Logger,
   UnauthorizedException,
+  Get,
 } from '@nestjs/common';
 import { VapiService } from './vapi.service';
 import { InterviewResultService } from './interview-result.service';
 import { VapiToolCallDto } from './vapi.dto';
+import { GroqInterviewAnalysisService } from './groq-interview-analysis.service';
 
 @Controller('vapi')
 export class VapiController {
@@ -20,6 +22,7 @@ export class VapiController {
   constructor(
     private readonly vapiService: VapiService,
     private readonly interviewResultService: InterviewResultService,
+    private readonly groqService: GroqInterviewAnalysisService,
   ) {}
 
   private validateWebhookSecret(vapiSecret: string | undefined) {
@@ -101,7 +104,8 @@ export class VapiController {
       applicant_email: email,
       interviewId: String(body?.interviewId ?? '').trim() || undefined,
       inviteToken: String(body?.inviteToken ?? '').trim() || undefined,
-      vapi_call_id: String(body?.vapi_call_id ?? body?.callId ?? '').trim() || undefined,
+      vapi_call_id:
+        String(body?.vapi_call_id ?? body?.callId ?? '').trim() || undefined,
     });
 
     return {
@@ -118,20 +122,26 @@ export class VapiController {
   @HttpCode(HttpStatus.OK)
   async saveTranscript(@Body() body: any) {
     this.logger.log('📝 save-transcript request received');
+    this.logger.debug(
+      `📋 Request body keys: ${Object.keys(body ?? {}).join(', ')}`,
+    );
 
     try {
-      const email = String(
-        body?.email ?? body?.applicant_email ?? '',
-      )
+      const email = String(body?.email ?? body?.applicant_email ?? '')
         .trim()
         .toLowerCase();
 
       const transcript = this.vapiService.extractTranscriptFromPayload(body);
 
       if (!email) {
+        this.logger.warn('❌ Email is required for transcript save');
         throw new BadRequestException('Email is required');
       }
       if (!transcript) {
+        this.logger.warn('❌ Transcript is empty or missing');
+        this.logger.warn(
+          '💡 Ensure VAPI has transcription ENABLED in dashboard settings',
+        );
         throw new BadRequestException('Transcript is required');
       }
 
@@ -141,29 +151,40 @@ export class VapiController {
       this.logger.log(
         `💾 Persisting transcript (${transcript.length} chars) for ${email}`,
       );
+      this.logger.log(`🎫 Interview ID: ${interviewId ?? 'not provided'}`);
+      this.logger.log(`🔑 Invite Token: ${inviteToken ?? 'not provided'}`);
 
       const saved = await this.vapiService.persistTranscriptAndAnalysis({
         email,
         interviewId,
         inviteToken,
         transcript,
-        vapi_call_id: String(body?.vapi_call_id ?? body?.callId ?? '').trim() || undefined,
+        vapi_call_id:
+          String(body?.vapi_call_id ?? body?.callId ?? '').trim() || undefined,
         jobTitle: body?.jobTitle,
         jobDescription: body?.jobDescription,
       });
 
       if (!saved) {
+        this.logger.warn(`⚠️ No interview result found for email: ${email}`);
         return {
           success: false,
           message: 'No interview result found for this email',
+          email,
+          transcriptLength: transcript.length,
         };
       }
 
+      this.logger.log(`✅ Transcript saved and analyzed successfully`);
       return {
         success: true,
         message: 'Transcript saved and analyzed successfully',
         email,
         id: (saved as any)?._id,
+        transcriptLength: transcript.length,
+        analysisAvailable: Boolean((saved as any)?.analysis),
+        interviewSummary: (saved as any)?.interview_summary,
+        overallRating: (saved as any)?.overall_rating,
       };
     } catch (error: any) {
       if (error instanceof BadRequestException) throw error;
@@ -176,5 +197,58 @@ export class VapiController {
       );
     }
   }
-}
 
+  /**
+   * GET /vapi/health
+   * Health check endpoint to verify configuration
+   */
+  @Get('health')
+  @HttpCode(HttpStatus.OK)
+  async healthCheck() {
+    const vapiSecret = String(process.env.VAPI_WEBHOOK_SECRET ?? '').trim();
+    const vapiPrivateKey = String(process.env.VAPI_PRIVATE_KEY ?? '').trim();
+    const vapiAssistantId = String(process.env.VAPI_ASSISTANT_ID ?? '').trim();
+    const groqApiKey = String(process.env.GROQ_API_KEY ?? '').trim();
+    const groqModel = String(
+      process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile',
+    ).trim();
+
+    return {
+      status: 'ok',
+      vapi: {
+        webhookSecretConfigured: Boolean(vapiSecret),
+        privateKeyConfigured: Boolean(vapiPrivateKey),
+        assistantIdConfigured: Boolean(vapiAssistantId),
+        assistantId: vapiAssistantId || 'NOT_CONFIGURED',
+      },
+      groq: {
+        apiKeyConfigured: Boolean(groqApiKey),
+        model: groqModel,
+        enabled: Boolean(groqApiKey),
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * GET /vapi/assistant-info
+   * Get VAPI assistant configuration
+   */
+  @Get('assistant-info')
+  @HttpCode(HttpStatus.OK)
+  async getAssistantInfo() {
+    const assistantId = String(process.env.VAPI_ASSISTANT_ID ?? '').trim();
+    const publicKey = String(process.env.VAPI_PUBLIC_KEY ?? '').trim();
+
+    if (!assistantId) {
+      throw new BadRequestException('VAPI_ASSISTANT_ID is not configured');
+    }
+
+    return {
+      assistantId,
+      publicKey: publicKey ? '***configured***' : 'NOT_CONFIGURED',
+      webhookBaseUrl: process.env.WEBHOOK_URL ?? 'NOT_CONFIGURED',
+      configured: Boolean(assistantId && publicKey),
+    };
+  }
+}

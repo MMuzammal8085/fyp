@@ -10,7 +10,8 @@ interface VapiCallComponentProps {
   };
   email?: string;
   interviewId?: string;
-  onCallEnd: () => void;
+  inviteToken?: string;
+  onCallEnd: (success: boolean, resultId?: string) => void;
 }
 
 type CallState = "idle" | "connecting" | "in-call" | "ended" | "error";
@@ -19,6 +20,7 @@ export default function VapiCallComponent({
   callData,
   email,
   interviewId,
+  inviteToken,
   onCallEnd,
 }: VapiCallComponentProps) {
   const vapiRef = useRef<any | null>(null);
@@ -26,6 +28,7 @@ export default function VapiCallComponent({
   const [callState, setCallState] = useState<CallState>("connecting");
   const [error, setError] = useState<string>("");
   const [transcript, setTranscript] = useState<string>("");
+  const [isPolling, setIsPolling] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -48,7 +51,7 @@ export default function VapiCallComponent({
         });
 
         vapi.on("call-end", async () => {
-          console.log("Call ended, saving transcript...");
+          console.log("📞 Call ended, saving transcript...");
           setCallState("ended");
 
           const finalTranscript = transcriptRef.current.trim();
@@ -67,12 +70,18 @@ export default function VapiCallComponent({
                   email: email.trim().toLowerCase(),
                   transcript: finalTranscript,
                   interviewId: interviewId,
+                  inviteToken: inviteToken,
                 }),
               });
 
               const result = await response.json();
               if (result.success) {
-                console.log("✅ Transcript saved successfully");
+                console.log(
+                  "✅ Transcript saved successfully, starting result polling...",
+                );
+                // Poll for analysis completion
+                setIsPolling(true);
+                await pollForResults(email, apiBase, result.id);
               } else {
                 console.warn("⚠️ Transcript save response:", result.message);
               }
@@ -89,6 +98,74 @@ export default function VapiCallComponent({
           }
         });
 
+        const pollForResults = async (
+          userEmail: string,
+          apiBase: string,
+          resultId?: string,
+        ) => {
+          const maxAttempts = 30; // Poll for up to 30 seconds
+          let attempts = 0;
+
+          const poll = async (): Promise<void> => {
+            attempts++;
+            try {
+              console.log(
+                `⏳ Polling for analysis results (attempt ${attempts}/${maxAttempts})...`,
+              );
+
+              const response = await fetch(
+                `${apiBase}/interviews/results/email/${encodeURIComponent(userEmail)}`,
+                {
+                  method: "GET",
+                  headers: {
+                    "Content-Type": "application/json",
+                  },
+                },
+              );
+
+              if (response.ok) {
+                const data = await response.json();
+
+                if (
+                  data.status === "completed" &&
+                  data.analysis &&
+                  (data.analysis.summary || data.interview_summary)
+                ) {
+                  console.log("✅ Analysis completed! Summary generated.");
+                  setIsPolling(false);
+                  onCallEnd(true, data._id);
+                  return;
+                } else if (data.status === "completed") {
+                  console.log(
+                    "✅ Interview marked as completed (analyzing...)",
+                  );
+                }
+              }
+
+              if (attempts < maxAttempts) {
+                // Wait 1 second before next attempt
+                setTimeout(poll, 1000);
+              } else {
+                console.warn(
+                  "⚠️ Polling timeout - analysis may still be processing",
+                );
+                setIsPolling(false);
+                onCallEnd(true, resultId);
+              }
+            } catch (err) {
+              console.error("❌ Polling error:", err);
+              if (attempts < maxAttempts) {
+                setTimeout(poll, 1000);
+              } else {
+                setIsPolling(false);
+                onCallEnd(true, resultId);
+              }
+            }
+          };
+
+          poll();
+        };
+
         vapi.on("error", (error: any) => {
           console.error("Vapi error:", error);
           setError(error?.message || "An error occurred during the call");
@@ -96,14 +173,47 @@ export default function VapiCallComponent({
         });
 
         vapi.on("message", (message: any) => {
-          console.log("Message:", message);
-          if (message.type === "transcript" && message.transcript) {
-            const role = String(message.role ?? "speaker").trim();
-            const line = `${role}: ${String(message.transcript).trim()}`;
-            transcriptRef.current = transcriptRef.current
-              ? `${transcriptRef.current}\n${line}`
-              : line;
-            setTranscript(transcriptRef.current);
+          console.log("📨 VAPI Message:", message);
+
+          // Try to extract transcript from various possible locations
+          const transcript =
+            (message.type === "transcript" && message.transcript) ||
+            message.transcript ||
+            message.content?.transcript ||
+            message.message?.transcript ||
+            message.artifact?.transcript ||
+            message.text;
+
+          if (transcript && String(transcript).trim()) {
+            const role = String(
+              (message.role ?? message.speaker ?? message.type === "transcript")
+                ? "speaker"
+                : "unknown",
+            )
+              .trim()
+              .toLowerCase();
+
+            // Only add if it's actual content
+            const cleanTranscript = String(transcript).trim();
+            if (cleanTranscript.length > 0) {
+              const line = `${role}: ${cleanTranscript}`;
+              console.log(
+                `📝 Appending to transcript: ${line.substring(0, 100)}...`,
+              );
+
+              transcriptRef.current = transcriptRef.current
+                ? `${transcriptRef.current}\n${line}`
+                : line;
+              setTranscript(transcriptRef.current);
+              console.log(
+                `✅ Current transcript length: ${transcriptRef.current.length} chars`,
+              );
+            }
+          } else if (message.type === "transcript") {
+            console.warn(
+              "⚠️ Message marked as transcript but has no content:",
+              message,
+            );
           }
         });
 
@@ -234,6 +344,17 @@ export default function VapiCallComponent({
                 <p>
                   <strong>Assistant ID:</strong> {callData.assistantId}
                 </p>
+                {email && (
+                  <p>
+                    <strong>Candidate:</strong> {email}
+                  </p>
+                )}
+                {isPolling && (
+                  <p className="text-blue-600 flex items-center gap-2">
+                    <Loader2 className="animate-spin" size={16} />
+                    Processing analysis...
+                  </p>
+                )}
                 <p>
                   <strong>Status:</strong> {callState}
                 </p>
@@ -298,7 +419,10 @@ export default function VapiCallComponent({
                     New Interview
                   </button>
                   <button
-                    onClick={onCallEnd}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onCallEnd(false);
+                    }}
                     className="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-semibold py-3 rounded-lg transition-colors"
                   >
                     Go Back

@@ -9,12 +9,16 @@ interface VapiCallData {
   variableValues: Record<string, any>;
   email?: string;
   interviewId?: string;
+  inviteToken?: string;
 }
 
 export default function VapiInterviewForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [vapiCallData, setVapiCallData] = useState<VapiCallData | null>(null);
+  const [completedResultId, setCompletedResultId] = useState<string | null>(
+    null,
+  );
   const [formData, setFormData] = useState({
     username: "",
     email: "",
@@ -87,8 +91,10 @@ export default function VapiInterviewForm() {
         systemPrompt,
         email: formData.email.trim().toLowerCase(),
         interviewId: formData.interviewId.trim() || undefined,
+        inviteToken: formData.interviewId.trim() || undefined,
         variableValues: {
           username: formData.username.trim(),
+          email: formData.email.trim().toLowerCase(),
           totalTimeMinutes: formData.totalTimeMinutes,
           jobTitle: formData.jobTitle.trim(),
           jobDescription: formData.jobDescription.trim(),
@@ -116,8 +122,53 @@ export default function VapiInterviewForm() {
         callData={vapiCallData}
         email={vapiCallData.email}
         interviewId={vapiCallData.interviewId}
-        onCallEnd={() => setVapiCallData(null)}
+        inviteToken={vapiCallData.inviteToken}
+        onCallEnd={(success, resultId) => {
+          if (success && resultId) {
+            setCompletedResultId(resultId);
+          }
+          setVapiCallData(null);
+        }}
       />
+    );
+  }
+
+  // Show completion message
+  if (completedResultId) {
+    return (
+      <div className="min-h-screen bg-slate-50 p-8">
+        <div className="max-w-2xl mx-auto">
+          <div className="bg-white rounded-lg shadow-lg p-8 text-center">
+            <div className="text-6xl mb-4">✅</div>
+            <h1 className="text-3xl font-bold text-gray-800 mb-4">
+              Interview Completed!
+            </h1>
+            <p className="text-gray-600 mb-8">
+              Your interview has been successfully completed. The analysis is
+              being processed and will be available shortly.
+            </p>
+            <button
+              onClick={() => {
+                setCompletedResultId(null);
+                setVapiCallData(null);
+                setFormData({
+                  username: "",
+                  email: "",
+                  interviewId: "",
+                  totalTimeMinutes: 5,
+                  jobTitle: "",
+                  jobDescription: "",
+                  resumeDescription: "",
+                  compulsoryQuestions: "",
+                });
+              }}
+              className="px-8 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition"
+            >
+              Start Another Interview
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 
